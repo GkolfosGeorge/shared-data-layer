@@ -1,0 +1,7 @@
+cache/
+options_archive/
+.ipynb_checkpoints/
+__pycache__/
+*.pyc
+*.egg-info/
+.env
