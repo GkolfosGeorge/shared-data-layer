@@ -49,3 +49,25 @@ def get_universe_as_of_local(
 
     tickers = sorted(df.loc[mask, "ticker"].unique().tolist())
     return tickers
+
+
+def get_membership_table_local(csv_path: str = DEFAULT_MEMBERSHIP_CSV) -> pd.DataFrame:
+    """
+    Drop-in replacement for db.get_membership_table(index_name): returns the
+    full point-in-time membership table [ticker, date_added, date_removed],
+    one row per interval (date_removed is NaT if still active). Pass to
+    backtester.run_backtest(membership=...) to restrict new-position
+    candidates to actual index constituents on each review date.
+
+    Unlike db.get_membership_table(), takes no `index_name` argument since
+    the CSV is already scoped to one index at export time.
+    """
+    csv_file = Path(csv_path)
+    if not csv_file.exists():
+        raise FileNotFoundError(
+            f"{csv_path} not found. Run export_membership_to_csv.py once "
+            f"(if you have DB access) or download the CSV included in this repo."
+        )
+
+    df = pd.read_csv(csv_file, parse_dates=["date_added", "date_removed"])
+    return df[["ticker", "date_added", "date_removed"]].copy()
