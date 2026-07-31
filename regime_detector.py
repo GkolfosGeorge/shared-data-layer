@@ -2,22 +2,22 @@
 """
 Market Regime Detector
 ──────────────────────
-Ταξινομεί το market σε Bull / Neutral / Bear χρησιμοποιώντας:
+Classifies the market into Bull / Neutral / Bear using:
   1. VIX level        — implied volatility (fear gauge)
-  2. SMA200 slope     — trend direction του broad market (SPY)
+  2. SMA200 slope     — broad market (SPY) trend direction
   3. Market breadth   — % stocks above their own SMA200
 
-Χρήση:
+Usage:
     from trading.regime_detector import RegimeDetector
 
     rd = RegimeDetector()
     rd.load(start="2018-01-01", end="2024-01-01")
 
     regime_at_date = rd.get_regime(pd.Timestamp("2022-06-01"))
-    # → "bear"
+    # -> "bear"
 
     full_series = rd.get_regime_series()
-    # → pd.Series με index=date, values="bull"/"neutral"/"bear"
+    # -> pd.Series with index=date, values="bull"/"neutral"/"bear"
 """
 
 import pandas as pd
@@ -26,23 +26,23 @@ import yfinance as yf
 from dataclasses import dataclass
 
 
-# ── Thresholds (override στο notebook) ───────────────────────────────────────
+# ── Thresholds (override in the notebook) ────────────────────────────────────
 
-VIX_BULL_THRESHOLD    = 20.0   # VIX < 20  → bull signal
-VIX_BEAR_THRESHOLD    = 30.0   # VIX > 30  → bear signal
+VIX_BULL_THRESHOLD    = 20.0   # VIX < 20  -> bull signal
+VIX_BEAR_THRESHOLD    = 30.0   # VIX > 30  -> bear signal
 
-SLOPE_BULL_THRESHOLD  = 0.00   # SMA200 slope > 0 → uptrend
-SLOPE_BEAR_THRESHOLD  = -0.02  # SMA200 slope < -2% → downtrend
+SLOPE_BULL_THRESHOLD  = 0.00   # SMA200 slope > 0 -> uptrend
+SLOPE_BEAR_THRESHOLD  = -0.02  # SMA200 slope < -2% -> downtrend
 
-BREADTH_BULL          = 0.60   # >60% stocks above SMA200 → broad bull
-BREADTH_BEAR          = 0.40   # <40% stocks above SMA200 → broad bear
+BREADTH_BULL          = 0.60   # >60% stocks above SMA200 -> broad bull
+BREADTH_BEAR          = 0.40   # <40% stocks above SMA200 -> broad bear
 
 SMA200_PERIOD         = 200
-SLOPE_LOOKBACK        = 20     # trading days για τον υπολογισμό του slope
+SLOPE_LOOKBACK        = 20     # trading days for the slope calculation
 
 # Composite score thresholds (0-3 bull signals)
-BULL_MIN_SCORE        = 2      # ≥2 από 3 bull → "bull"
-BEAR_MIN_SCORE        = 2      # ≥2 από 3 bear → "bear"
+BULL_MIN_SCORE        = 2      # >=2 of 3 bull -> "bull"
+BEAR_MIN_SCORE        = 2      # >=2 of 3 bear -> "bear"
 
 
 # ── Regime config per mode ────────────────────────────────────────────────────
@@ -50,31 +50,31 @@ BEAR_MIN_SCORE        = 2      # ≥2 από 3 bear → "bear"
 @dataclass
 class RegimeConfig:
     """
-    Παράμετροι που αλλάζουν ανά regime.
-    Ο backtester τις διαβάζει σε κάθε rebalancing date.
+    Parameters that change per regime.
+    The backtester reads these on every rebalancing date.
     """
     name:               str
-    signal_threshold:   float   # minimum signal score για entry
+    signal_threshold:   float   # minimum signal score for entry
     top_n:              int     # max open positions
-    stop_atr_mult:      float   # fixed stop (χρησιμοποιείται σε neutral/bear)
+    stop_atr_mult:      float   # fixed stop (used in neutral/bear)
     target_atr_mult:    float   # profit target multiplier
     max_hold_days:      int     # maximum days in a trade
-    use_trail_stop:     bool    # αν True → percentage trail αντί fixed stop
-    trail_pct:          float   # % κάτω από peak price (bull mode)
-    cash_pct:           float   # % capital που κρατιέται σε cash (bear mode)
-    w_primary_override: float | None  # override για primary signal weight
+    use_trail_stop:     bool    # if True -> percentage trail instead of fixed stop
+    trail_pct:          float   # % below peak price (bull mode)
+    cash_pct:           float   # % capital kept in cash (bear mode)
+    w_primary_override: float | None  # override for primary signal weight
 
 
 REGIME_CONFIGS = {
     "bull": RegimeConfig(
         name               = "bull",
-        signal_threshold   = 6.0,    # χαλαρότερο entry
+        signal_threshold   = 6.0,    # looser entry
         top_n              = 5,
-        stop_atr_mult      = 2.0,    # αρχικό stop — αντικαθίσταται από trail
-        target_atr_mult    = 6.0,    # μεγαλύτερο target, αφήνουμε να τρέχει
+        stop_atr_mult      = 2.0,    # initial stop — replaced by trail
+        target_atr_mult    = 6.0,    # bigger target, let it run
         max_hold_days      = 365,
         use_trail_stop     = True,
-        trail_pct          = 0.08,   # -8% από peak
+        trail_pct          = 0.08,   # -8% from peak
         cash_pct           = 0.0,
         w_primary_override = None,
     ),
@@ -92,7 +92,7 @@ REGIME_CONFIGS = {
     ),
     "bear": RegimeConfig(
         name               = "bear",
-        signal_threshold   = 7.5,    # αυστηρό entry — μόνο οι καλύτερες θέσεις
+        signal_threshold   = 7.5,    # strict entry — only the best setups
         top_n              = 3,
         stop_atr_mult      = 1.0,    # tight stop
         target_atr_mult    = 3.0,
@@ -100,7 +100,7 @@ REGIME_CONFIGS = {
         use_trail_stop     = False,
         trail_pct          = 0.0,
         cash_pct           = 0.50,   # 50% cash — defensive
-        w_primary_override = 0.70,   # trend signals έχουν μεγαλύτερο βάρος
+        w_primary_override = 0.70,   # trend signals get more weight
     ),
 }
 
@@ -109,8 +109,8 @@ REGIME_CONFIGS = {
 
 class RegimeDetector:
     """
-    Κατεβάζει VIX + SPY, υπολογίζει breadth από universe data,
-    και παράγει ημερήσια regime classification.
+    Downloads VIX + SPY, computes breadth from universe data, and produces
+    a daily regime classification.
     """
 
     def __init__(
@@ -133,7 +133,7 @@ class RegimeDetector:
         self.bull_min_score = bull_min_score
         self.bear_min_score = bear_min_score
 
-        # Αποθηκεύονται μετά το load()
+        # Populated after load()
         self._vix_series:      pd.Series | None = None
         self._slope_series:    pd.Series | None = None
         self._breadth_series:  pd.Series | None = None
@@ -151,17 +151,17 @@ class RegimeDetector:
         vix_ticker:    str = "^VIX",
     ) -> "RegimeDetector":
         """
-        Κατεβάζει VIX και SPY, υπολογίζει indicators, ταξινομεί regimes.
+        Downloads VIX and SPY, computes indicators, classifies regimes.
 
-        universe_data: το MultiIndex DataFrame από download_sp500_data —
-                       χρησιμοποιείται για τον υπολογισμό του market breadth.
-                       Αν None → breadth παραλείπεται, μόνο VIX + slope.
+        universe_data: the MultiIndex DataFrame from download_sp500_data —
+                       used to compute market breadth. If None, breadth is
+                       skipped, only VIX + slope are used.
         """
-        # Κατεβάζουμε λίγο πριν για να έχουμε αρκετό ιστορικό για SMA200
+        # Fetch a bit earlier to have enough history for SMA200
         fetch_start = (pd.Timestamp(start) - pd.Timedelta(days=300)).strftime("%Y-%m-%d")
         fetch_end   = (pd.Timestamp(end)   + pd.Timedelta(days=5)).strftime("%Y-%m-%d")
 
-        print(f"📡 Κατέβασμα VIX + {spy_ticker} για regime detection...")
+        print(f"📡 Downloading VIX + {spy_ticker} for regime detection...")
 
         # ── VIX ──────────────────────────────────────────────────────────────
         try:
@@ -173,7 +173,7 @@ class RegimeDetector:
             self._vix_series = vix_raw["Close"].rename("vix")
             print(f"   ✅ VIX: {len(self._vix_series)} rows")
         except Exception as e:
-            print(f"   ⚠️  VIX download απέτυχε: {e} — θα χρησιμοποιηθεί μόνο slope+breadth")
+            print(f"   ⚠️  VIX download failed: {e} — falling back to slope+breadth only")
             self._vix_series = None
 
         # ── SPY SMA200 slope ──────────────────────────────────────────────────
@@ -188,7 +188,7 @@ class RegimeDetector:
             self._slope_series = sma200.pct_change(SLOPE_LOOKBACK).rename("slope")
             print(f"   ✅ {spy_ticker} SMA200 slope: {len(self._slope_series)} rows")
         except Exception as e:
-            print(f"   ⚠️  {spy_ticker} download απέτυχε: {e}")
+            print(f"   ⚠️  {spy_ticker} download failed: {e}")
             self._slope_series = None
 
         # ── Market breadth (% stocks above SMA200) ────────────────────────────
@@ -197,22 +197,22 @@ class RegimeDetector:
                 self._breadth_series = self._compute_breadth(universe_data)
                 print(f"   ✅ Market breadth: {len(self._breadth_series)} rows")
             except Exception as e:
-                print(f"   ⚠️  Breadth υπολογισμός απέτυχε: {e}")
+                print(f"   ⚠️  Breadth computation failed: {e}")
                 self._breadth_series = None
         else:
             self._breadth_series = None
-            print("   ℹ️  Δεν δόθηκαν universe_data — breadth παραλείπεται")
+            print("   ℹ️  No universe_data provided — breadth skipped")
 
         # ── Classify ──────────────────────────────────────────────────────────
         self._regime_series, self._components_df = self._classify(start, end)
-        print(f"✅ Regime series έτοιμο: {len(self._regime_series)} trading days\n")
+        print(f"✅ Regime series ready: {len(self._regime_series)} trading days\n")
 
         return self
 
     def _compute_breadth(self, data: pd.DataFrame) -> pd.Series:
         """
         % tickers with Close > SMA200 on each date.
-        Χρησιμοποιεί rolling για αποφυγή look-ahead bias.
+        Uses rolling to avoid look-ahead bias.
         """
         tickers = data.columns.get_level_values(0).unique()
         above   = {}
@@ -229,7 +229,7 @@ class RegimeDetector:
             return pd.Series(dtype=float)
 
         above_df = pd.DataFrame(above)
-        # Κρατάμε μόνο rows με αρκετά valid tickers (>50%)
+        # Keep only rows with enough valid tickers (>50%)
         valid_count = above_df.notna().sum(axis=1)
         threshold   = len(above) * 0.5
         breadth     = above_df[valid_count >= threshold].mean(axis=1)
@@ -241,13 +241,13 @@ class RegimeDetector:
         end:   str,
     ) -> tuple[pd.Series, pd.DataFrame]:
         """
-        Παράγει ημερήσιο regime string: "bull" | "neutral" | "bear"
-        και ένα DataFrame με όλα τα components για debugging.
+        Produces a daily regime string: "bull" | "neutral" | "bear"
+        and a DataFrame with all components for debugging.
         """
         start_ts = pd.Timestamp(start)
         end_ts   = pd.Timestamp(end)
 
-        # Συνενώνουμε όλα τα components σε κοινό index
+        # Merge all components onto a common index
         parts = {}
         if self._vix_series is not None:
             parts["vix"]     = self._vix_series
@@ -257,10 +257,10 @@ class RegimeDetector:
             parts["breadth"] = self._breadth_series
 
         if not parts:
-            raise ValueError("Δεν υπάρχουν δεδομένα για regime classification")
+            raise ValueError("No data available for regime classification")
 
         df = pd.DataFrame(parts)
-        df = df.ffill()   # forward-fill για trading day gaps (π.χ. VIX ≠ SPY days)
+        df = df.ffill()   # forward-fill for trading day gaps (e.g. VIX != SPY days)
         df = df[(df.index >= start_ts) & (df.index <= end_ts)]
 
         regimes    = []
@@ -346,42 +346,42 @@ class RegimeDetector:
 
     def get_regime(self, date: pd.Timestamp) -> str:
         """
-        Επιστρέφει το regime για μια συγκεκριμένη ημερομηνία.
-        Αν δεν υπάρχει exact match, παίρνει την τελευταία γνωστή τιμή.
+        Returns the regime for a specific date.
+        If there's no exact match, uses the last known value.
         """
         if self._regime_series is None:
-            raise RuntimeError("Κάλεσε πρώτα το .load()")
+            raise RuntimeError("Call .load() first")
 
         if date in self._regime_series.index:
             return self._regime_series[date]
 
-        # Τελευταία γνωστή τιμή πριν από την ημερομηνία
+        # Last known value before the date
         past = self._regime_series[self._regime_series.index <= date]
         if past.empty:
             return "neutral"
         return past.iloc[-1]
 
     def get_config(self, date: pd.Timestamp) -> RegimeConfig:
-        """Επιστρέφει το RegimeConfig για μια ημερομηνία."""
+        """Returns the RegimeConfig for a date."""
         regime = self.get_regime(date)
         return REGIME_CONFIGS[regime]
 
     def get_regime_series(self) -> pd.Series:
-        """Ολόκληρη η time series."""
+        """The full time series."""
         if self._regime_series is None:
-            raise RuntimeError("Κάλεσε πρώτα το .load()")
+            raise RuntimeError("Call .load() first")
         return self._regime_series.copy()
 
     def get_components(self) -> pd.DataFrame:
-        """DataFrame με VIX, slope, breadth και signals για debugging."""
+        """DataFrame with VIX, slope, breadth, and signals for debugging."""
         if self._components_df is None:
-            raise RuntimeError("Κάλεσε πρώτα το .load()")
+            raise RuntimeError("Call .load() first")
         return self._components_df.copy()
 
     def summary(self) -> None:
-        """Εκτυπώνει σύνοψη distribution ανά regime."""
+        """Prints a distribution summary per regime."""
         if self._regime_series is None:
-            print("Κάλεσε πρώτα το .load()")
+            print("Call .load() first")
             return
 
         counts = self._regime_series.value_counts()
@@ -389,7 +389,7 @@ class RegimeDetector:
 
         print(f"\n{'='*45}")
         print(f"  REGIME SUMMARY")
-        print(f"  {self._regime_series.index[0].date()} → {self._regime_series.index[-1].date()}")
+        print(f"  {self._regime_series.index[0].date()} -> {self._regime_series.index[-1].date()}")
         print(f"{'='*45}")
 
         for regime in ["bull", "neutral", "bear"]:

@@ -3,7 +3,7 @@ import pandas as pd
 import numpy as np
 
 
-# ── Default config — override από notebook configuration cell ─────────────────
+# ── Default config — override from notebook configuration cell ───────────────
 RSI_PERIOD     = 14
 RSI_OVERSOLD   = 35
 RSI_OVERBOUGHT = 70
@@ -110,13 +110,6 @@ def _compute_stoch_rsi(
     smooth_d: int = 3,
 ) -> tuple[pd.Series, pd.Series]:
     """
-    Stochastic RSI — εφαρμόζει Stochastic oscillator στις τιμές RSI.
-    Πιο ευαίσθητος από plain RSI, δίνει πιο ακριβές timing για entry.
-
-    Returns:
-        %K : γρήγορη γραμμή (0-1), oversold < 0.20
-        %D : αργή γραμμή (signal line, smoothed %K)
-
     Stochastic RSI — applies Stochastic oscillator to RSI values.
     More sensitive than plain RSI, provides more precise entry timing.
 
@@ -145,10 +138,6 @@ def _compute_williams_r(
     period: int = 14,
 ) -> pd.Series:
     """
-    Williams %R — μετρά πού βρίσκεται η τιμή στο High-Low range N ημερών.
-    Τιμές: 0 έως -100. Oversold < -80, Overbought > -20.
-    Πιο άμεσος από RSI — αντιδρά στην τιμή, όχι σε παράγωγο.
-
     Williams %R — measures price position within N-day High-Low range.
     Values: 0 to -100. Oversold < -80, Overbought > -20.
     More direct than RSI — reacts to price itself, not a derivative.
@@ -169,17 +158,6 @@ def _compute_atr_percentile(
     lookback: int = 252,
 ) -> tuple[float, str]:
     """
-    ATR Percentile — πού βρίσκεται το τρέχον ATR στο ιστορικό 1 έτους.
-
-    Επιστρέφει:
-        percentile : 0-100 (πού βρίσκεται σήμερα vs ιστορικό)
-        regime     : "compression" | "normal" | "expansion"
-
-    Ερμηνεία:
-        < 25  → Volatility compression — η μετοχή "κοιμάται", έτοιμη για κίνηση
-        25-75 → Κανονικό εύρος
-        > 75  → Volatility expansion — πανικός ή momentum, capitulation πιθανό
-
     ATR Percentile — where current ATR sits in 1-year historical range.
 
     Returns:
@@ -210,7 +188,7 @@ def _compute_atr_percentile(
     return round(percentile, 1), regime
 
 
-# ── Κύρια συνάρτηση signals ──────────────────────────────────────────────────
+# ── Main signals function ─────────────────────────────────────────────────────
 
 def compute_signals(
     ticker: str,
@@ -237,9 +215,9 @@ def compute_signals(
     w_confirmation: float = None,
 ) -> dict:
 
-    # Fallback στα module-level defaults
-    # ΣΗΜΑΝΤΙΚΟ: χρησιμοποιούμε `is not None` (όχι `or`) για να μην κάνουμε
-    # λάθος fallback όταν ο caller περνά νόμιμα μηδενικές/falsy τιμές.
+    # Fallback to module-level defaults
+    # IMPORTANT: we use `is not None` (not `or`) to avoid an incorrect
+    # fallback when the caller legitimately passes zero/falsy values.
     _rsi_period     = rsi_period     if rsi_period     is not None else RSI_PERIOD
     _rsi_oversold   = rsi_oversold   if rsi_oversold   is not None else RSI_OVERSOLD
     _rsi_ideal_low  = rsi_ideal_low  if rsi_ideal_low  is not None else RSI_IDEAL_LOW
@@ -336,7 +314,7 @@ def compute_signals(
         s_rsi = 2.0
     elif _rsi_ideal_low <= rsi_val <= _rsi_ideal_high:
         s_rsi = 9.0
-    elif rsi_val < _rsi_oversold:   # FIX: χρησιμοποιούμε την παράμετρο, όχι το hardcoded constant
+    elif rsi_val < _rsi_oversold:   # FIX: use the parameter, not the hardcoded constant
         s_rsi = 4.0
     elif rsi_val < _rsi_ideal_low:
         s_rsi = 6.0
@@ -599,7 +577,7 @@ def compute_signals_universe(
                 "error":        str(e),
             }
 
-    print(f"✅ Signals υπολογίστηκαν: {len(results) - errors}/{len(targets)} tickers")
+    print(f"✅ Signals computed: {len(results) - errors}/{len(targets)} tickers")
     if errors:
         print(f"⚠️ Errors: {errors} tickers")
 
@@ -632,7 +610,7 @@ def print_signal_report(signal_dict: dict) -> None:
     for cat_name, cat_data in bd.items():
         print(
             f"\n  {cat_name.capitalize():<20} {cat_data['score']:.1f} / 10"
-            f"  (βάρος {int(cat_data['weight']*100)}%)"
+            f"  (weight {int(cat_data['weight']*100)}%)"
         )
         for metric, mdata in cat_data["metrics"].items():
             print(

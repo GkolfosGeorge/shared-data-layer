@@ -1,22 +1,22 @@
 # sector_lookup.py
 """
-Sector Lookup — Ελαφριά, ανεξάρτητη ταξινόμηση κλάδου.
-──────────────────────────────────────────────────────
-ΔΕΝ είναι fundamentals analysis. Δεν σκοράρει τίποτα, δεν κρίνει ποιότητα
-εταιρείας. Είναι απλά ένα static classification lookup (GICS sector μέσω
-yfinance) που χρησιμοποιείται ΜΟΝΟ για διαφοροποίηση χαρτοφυλακίου
-(max_per_sector) στο scorer_mr.py — τίποτα άλλο.
+Sector Lookup — lightweight, standalone sector classification.
+────────────────────────────────────────────────────────────────
+This is NOT fundamentals analysis. It doesn't score anything or judge
+company quality. It's just a static classification lookup (GICS sector via
+yfinance) used ONLY for portfolio diversification (max_per_sector) in
+scorer_mr.py — nothing else.
 
-Κρατιέται ξεχωριστά από το fundamentals.py γιατί το scorer_mr.py (το
-κύριο, καθαρά τεχνικό script) δεν πρέπει να έχει ΚΑΜΙΑ εξάρτηση από
-fundamentals δεδομένα — ούτε καν για hard filters. Το fundamentals.py
-+ ο fundamental-weighted scorer αποτελούν ξεχωριστό, μελλοντικό project.
+Kept separate from fundamentals.py because scorer_mr.py (the main, purely
+technical script) must have NO dependency on fundamentals data — not even
+for hard filters. fundamentals.py and the fundamental-weighted scorer are a
+separate, future project.
 
-Χρήση:
+Usage:
     from sector_lookup import get_sectors
 
     sectors = get_sectors(["AAPL", "MSFT", "XOM"])
-    # → {"AAPL": "Technology", "MSFT": "Technology", "XOM": "Energy"}
+    # -> {"AAPL": "Technology", "MSFT": "Technology", "XOM": "Energy"}
 """
 
 import json
@@ -25,7 +25,7 @@ from pathlib import Path
 
 import yfinance as yf
 
-DEFAULT_MAX_AGE_HOURS = 24 * 30   # 30 μέρες — το sector μιας εταιρείας σχεδόν ποτέ δεν αλλάζει
+DEFAULT_MAX_AGE_HOURS = 24 * 30   # 30 days — a company's sector almost never changes
 UNKNOWN_SECTOR        = "Unknown"
 
 
@@ -36,10 +36,10 @@ def get_sectors(
     max_age_hours: int = DEFAULT_MAX_AGE_HOURS,
 ) -> dict[str, str]:
     """
-    Επιστρέφει {ticker: sector} με local caching.
-    Δεν κάνει retry-heavy logic — αν ένα ticker αποτύχει, μπαίνει ως
-    "Unknown" και δεν μπλοκάρει τίποτα (η διαφοροποίηση απλά τον
-    αγνοεί/τον βάζει σε ξεχωριστό sector bucket).
+    Returns {ticker: sector} with local caching.
+    No retry-heavy logic — if a ticker fails, it's marked "Unknown" and
+    doesn't block anything (diversification just ignores it / puts it in
+    its own sector bucket).
     """
     folder = Path(folder_path)
     folder.mkdir(parents=True, exist_ok=True)
@@ -62,7 +62,7 @@ def get_sectors(
     if not to_fetch:
         return {t: sectors.get(t, UNKNOWN_SECTOR) for t in tickers}
 
-    print(f"🔄 Sector lookup για {len(to_fetch)} tickers...")
+    print(f"🔄 Sector lookup for {len(to_fetch)} tickers...")
     for i, ticker in enumerate(to_fetch):
         try:
             info = yf.Ticker(ticker).info
