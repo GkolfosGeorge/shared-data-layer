@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "trading-shared-data"
-version = "0.1.9"
+version = "0.1.10"
 description = "Shared data infrastructure for the trading scanner repos: ticker provider, sector lookup, regime detector, signals, data engine."
 requires-python = ">=3.11"
 dependencies = [
@@ -16,14 +16,6 @@ dependencies = [
     "beautifulsoup4>=4.12",
     "html5lib>=1.1",
     "pyarrow>=14.0",
-]
-
-# Only needed to run export_membership_to_csv.py / db.py directly (i.e. to
-# refresh data/sp500_membership.csv from Postgres). No runtime consumer of
-# this package (data_engine.py included) needs a live DB connection anymore
-# — install with: pip install "trading-shared-data[maintenance] @ git+..."
-[project.optional-dependencies]
-maintenance = [
     "sqlalchemy>=2.0",
     "psycopg2-binary>=2.9",
 ]
@@ -39,6 +31,5 @@ py-modules = [
     "db",
     "options_scanner",
     "options_archive",
-    "news_scanner",
-    "news_archive",
+    "fundamentals",
 ]
