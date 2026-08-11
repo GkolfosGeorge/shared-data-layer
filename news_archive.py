@@ -16,10 +16,15 @@ WHY THE LOOKBACK WINDOW MEANS DUPLICATES ACROSS FILES (by design):
   news_scanner.py re-requests a multi-day window on every run (a safety
   net against a missed cron run), so the SAME article can legitimately
   appear in 2-3 consecutive daily files. That redundancy is intentional
-  and cheap to store — it is resolved at LOAD time here via dedup on
-  finnhub_id, never at save time (the raw daily files themselves are
-  never deduplicated against each other, keeping each day's file an
-  honest, standalone snapshot of what was fetched that day).
+  and cheap to store — it is resolved at LOAD time here, never at save
+  time (the raw daily files themselves are never deduplicated against
+  each other, keeping each day's file an honest, standalone snapshot of
+  what was fetched that day).
+
+  Dedup is keyed on (ticker, finnhub_id), NOT finnhub_id alone: the same
+  article is routinely returned under more than one ticker (e.g. a
+  single article mentioning both AAPL and MSFT), and each of those
+  ticker-article associations is a real, separate signal worth keeping.
 
 Usage:
     from news_archive import save_news_snapshot
@@ -88,10 +93,18 @@ def load_news_archive(
     optionally filtered to a [start, end] date range (inclusive, on
     snapshot_date — the fetch date, not published_at).
 
-    dedup=True (default): drops duplicate articles across overlapping
-    lookback windows, keyed on finnhub_id, keeping the EARLIEST-fetched
-    copy (snapshot_date ascending) — i.e. the first time we ever saw the
-    article, not the most recent re-fetch of it.
+    dedup=True (default): drops duplicate (ticker, finnhub_id) pairs
+    across overlapping lookback windows, keeping the EARLIEST-fetched
+    copy (snapshot_date ascending) — i.e. the first time we ever saw that
+    article FOR THAT TICKER, not the most recent re-fetch of it.
+
+    IMPORTANT: dedup is keyed on (ticker, finnhub_id), NOT finnhub_id
+    alone. The same article routinely comes back under more than one
+    ticker (e.g. an article mentioning both AAPL and MSFT is returned by
+    both tickers' queries, same finnhub_id, different ticker) — deduping
+    on finnhub_id alone would silently keep only one of those tickers'
+    rows and lose the article for the other, even though it's genuinely
+    relevant to both.
 
     Rows with a null finnhub_id are never deduplicated (kept as-is),
     since there's no reliable key to match them on.
@@ -132,7 +145,7 @@ def load_news_archive(
         result = result.sort_values("snapshot_date")
 
         has_id = result["finnhub_id"].notna()
-        with_id = result[has_id].drop_duplicates(subset="finnhub_id", keep="first")
+        with_id = result[has_id].drop_duplicates(subset=["ticker", "finnhub_id"], keep="first")
         without_id = result[~has_id]
 
         result = pd.concat([with_id, without_id], ignore_index=True)
