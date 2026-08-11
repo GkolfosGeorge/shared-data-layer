@@ -201,6 +201,17 @@ class OptionsScanner:
                             "open_interest":      row.get("openInterest"),
                             "implied_volatility": row.get("impliedVolatility"),
                             "in_the_money":       row.get("inTheMoney"),
+                            # contract_symbol: unique per-contract identifier,
+                            # enables cross-day tracking of the same
+                            # strike/expiration (e.g. open interest evolution).
+                            # last_trade_date: needed to distinguish
+                            # live/liquid quotes from stale illiquid ones
+                            # (e.g. a far OTM strike with a last_price from
+                            # weeks ago) — required for IV Rank later.
+                            # Zero extra API cost, already returned by
+                            # option_chain().
+                            "contract_symbol":    row.get("contractSymbol"),
+                            "last_trade_date":    row.get("lastTradeDate"),
                             "underlying_price":   price,
                         })
                     for _, row in puts.iterrows():
@@ -216,6 +227,8 @@ class OptionsScanner:
                             "open_interest":      row.get("openInterest"),
                             "implied_volatility": row.get("impliedVolatility"),
                             "in_the_money":       row.get("inTheMoney"),
+                            "contract_symbol":    row.get("contractSymbol"),
+                            "last_trade_date":    row.get("lastTradeDate"),
                             "underlying_price":   price,
                         })
 
