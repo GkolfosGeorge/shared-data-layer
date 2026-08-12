@@ -46,6 +46,7 @@ from sqlalchemy.engine import Engine
 from ticker_provider import get_cik_for_ticker, SEC_HEADERS
 
 COMPANYFACTS_URL = "https://data.sec.gov/api/xbrl/companyfacts/CIK{cik:010d}.json"
+SUBMISSIONS_URL = "https://data.sec.gov/submissions/CIK{cik:010d}.json"
 
 # SEC's fair-access policy expects a well-behaved client; well under their
 # informal ~10 req/sec ceiling.
@@ -184,6 +185,27 @@ def fetch_companyfacts(cik: int) -> dict | None:
         return None
     r.raise_for_status()
     return r.json()
+
+
+def get_latest_filing_date(cik: int) -> "date | None":
+    """
+    Fetches ONLY the lightweight `submissions` endpoint (a list of recent
+    filings — tiny compared to the full companyfacts blob, which can be
+    several MB for large companies) and returns the most recent filing
+    date on record. Used to cheaply decide "is there anything new here
+    at all?" before paying for a full companyfacts download.
+    """
+    from datetime import datetime
+
+    url = SUBMISSIONS_URL.format(cik=cik)
+    r = requests.get(url, headers=SEC_HEADERS, timeout=30)
+    if r.status_code == 404:
+        return None
+    r.raise_for_status()
+    dates = r.json().get("filings", {}).get("recent", {}).get("filingDate", [])
+    if not dates:
+        return None
+    return max(datetime.strptime(d, "%Y-%m-%d").date() for d in dates)
 
 
 # ── parse ──────────────────────────────────────────────────────────────────
@@ -374,11 +396,36 @@ def upsert_fundamentals(df: pd.DataFrame, engine: Engine) -> dict:
 
 
 # ── orchestration ────────────────────────────────────────────────────────
-def ingest_fundamentals_for_ticker(ticker: str, engine: Engine) -> dict:
+def _get_latest_known_filed_date(ticker: str, engine: Engine):
+    """MAX(filed_date) already on file for this ticker, or None if we
+    have nothing yet (e.g. brand-new spin-off — must always do a full
+    fetch in that case, never skip)."""
+    with engine.connect() as conn:
+        row = conn.execute(
+            text("SELECT MAX(filed_date) FROM fundamentals WHERE ticker = :ticker"),
+            {"ticker": ticker},
+        ).fetchone()
+    return row[0] if row else None
+
+
+def ingest_fundamentals_for_ticker(
+    ticker: str, engine: Engine, skip_if_no_new_filing: bool = False
+) -> dict:
     cik = get_cik_for_ticker(ticker)
     if cik is None:
         print(f"⚠️  {ticker}: no CIK found, skipping.")
         return {"ticker": ticker, "status": "no_cik"}
+
+    if skip_if_no_new_filing:
+        known = _get_latest_known_filed_date(ticker, engine)
+        if known is not None:
+            try:
+                latest = get_latest_filing_date(cik)
+            except Exception:
+                latest = None  # δεν ξέρουμε -> προχωράμε στο πλήρες fetch, ποτέ σιωπηλό skip σε αβεβαιότητα
+            if latest is not None and latest <= known:
+                print(f"⏭️  {ticker}: κανένα νέο filing (τελευταίο γνωστό {known}), παραλείπεται.")
+                return {"ticker": ticker, "status": "up_to_date", "attempted": 0, "inserted": 0}
 
     facts = fetch_companyfacts(cik)
     if facts is None:
@@ -395,12 +442,26 @@ def ingest_fundamentals_for_universe(
     tickers: list[str],
     engine: Engine,
     sleep: float = REQUEST_SLEEP,
+    skip_if_no_new_filing: bool = False,
 ) -> pd.DataFrame:
-    """Sequential ingest across a ticker universe (e.g. the full S&P 500)."""
+    """Sequential ingest across a ticker universe (e.g. the full S&P 500).
+
+    skip_if_no_new_filing=True checks a lightweight SEC endpoint first
+    and skips the full (multi-MB) companyfacts download entirely for
+    tickers with nothing new since our last known filed_date — the
+    normal case in a weekly recurring run, where most companies haven't
+    filed anything since last week. Leave False for full
+    backfills/repairs where you deliberately want to re-process
+    everything regardless of freshness.
+    """
     results = []
     for i, ticker in enumerate(tickers):
         try:
-            results.append(ingest_fundamentals_for_ticker(ticker, engine))
+            results.append(
+                ingest_fundamentals_for_ticker(
+                    ticker, engine, skip_if_no_new_filing=skip_if_no_new_filing
+                )
+            )
         except Exception as e:
             print(f"❌ {ticker}: {e}")
             results.append({"ticker": ticker, "status": "error", "error": str(e)})
