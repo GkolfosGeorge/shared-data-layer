@@ -146,27 +146,27 @@ def fetch_form4_index(cik: int, since_date: Optional[str] = None) -> list[dict]:
     recent = data.get("filings", {}).get("recent", {})
     _extract(recent)
 
-    # Older filings, paginated — only bother if since_date reaches back
-    # further than the oldest date already covered by `recent`. Pages in
-    # `files[]` are ordered newest-chunk-first, so once we hit a page whose
-    # filings are ENTIRELY older than since_date, every remaining page is
-    # older still — stop there instead of walking a company's full decades
-    # of SEC history (this was the main cause of very slow per-ticker
-    # runtimes for old/large filers with hundreds of historical filings).
+    # Older filings, paginated. Each shard descriptor already carries
+    # filingFrom/filingTo — we can decide WITHOUT downloading whether a
+    # shard could possibly contain anything >= since_date, and skip it
+    # entirely if not. This is the key fix for the slow runs seen in
+    # practice: large/old companies can have dozens of historical shards,
+    # and downloading-then-checking every one of them (the previous
+    # approach) was needlessly slow. Now we only fetch shards whose date
+    # range actually overlaps the window we care about.
     oldest_recent = min(recent.get("filingDate", ["9999-99-99"]), default="9999-99-99")
     need_older_pages = (since_date and since_date < oldest_recent) or since_date is None
 
     if need_older_pages:
         for page in data.get("filings", {}).get("files", []):
+            page_to = page.get("filingTo", "9999-99-99")
+            if since_date and page_to < since_date:
+                continue  # this entire shard predates our cutoff — skip the download
             page_url = f"https://data.sec.gov/submissions/{page['name']}"
             page_data = _get_json(page_url)
             time.sleep(SLEEP_BETWEEN_REQUESTS)
-            if not page_data:
-                continue
-            page_dates = page_data.get("filingDate", [])
-            _extract(page_data)
-            if since_date and page_dates and max(page_dates) < since_date:
-                break  # this whole page (and everything after) predates our cutoff
+            if page_data:
+                _extract(page_data)
 
     return filings_out
 

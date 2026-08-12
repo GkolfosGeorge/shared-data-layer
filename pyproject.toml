@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "trading-shared-data"
-version = "0.1.14"
+version = "0.1.15"
 description = "Shared data infrastructure for the trading scanner repos: ticker provider, sector lookup, regime detector, signals, data engine."
 requires-python = ">=3.11"
 dependencies = [
