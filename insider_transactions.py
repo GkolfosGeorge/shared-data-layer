@@ -63,8 +63,22 @@ TRANSACTION_COLUMNS = [
 # ─────────────────────────────────────────────────────────────
 
 def fetch_universe_with_cik(engine: Engine) -> pd.DataFrame:
-    """Returns DataFrame[ticker, cik] for every company that has a known CIK."""
-    sql = text("SELECT ticker, cik FROM companies WHERE cik IS NOT NULL ORDER BY ticker")
+    """
+    Returns DataFrame[ticker, cik] for the fundamentals universe (~768
+    tickers) — NOT the full `companies` table, which contains a much
+    broader set of CIKs (10,000+) inherited from the pre-existing dataset
+    and is not scoped to tickers we actually have fundamentals for.
+    Joining against `fundamentals` (and taking DISTINCT) restricts the
+    insider-transactions universe to the same 768 tickers used elsewhere
+    in the ecosystem, as intended.
+    """
+    sql = text("""
+        SELECT DISTINCT c.ticker, c.cik
+        FROM companies c
+        JOIN fundamentals f ON f.ticker = c.ticker
+        WHERE c.cik IS NOT NULL
+        ORDER BY c.ticker
+    """)
     with engine.connect() as conn:
         rows = conn.execute(sql).fetchall()
     return pd.DataFrame(rows, columns=["ticker", "cik"])
@@ -82,9 +96,10 @@ def _get_json(url: str, max_retries: int = 3) -> Optional[dict]:
                 return resp.json()
             if resp.status_code == 404:
                 return None  # no submissions file for this CIK — not an error
+            # 403/429 etc — back off harder, SEC may be throttling.
         except requests.RequestException:
             pass
-        time.sleep(1)
+        time.sleep(2 ** attempt)  # exponential backoff: 1s, 2s, 4s — instead of a flat 1s each time
     return None
 
 
@@ -132,23 +147,26 @@ def fetch_form4_index(cik: int, since_date: Optional[str] = None) -> list[dict]:
     _extract(recent)
 
     # Older filings, paginated — only bother if since_date reaches back
-    # further than the oldest date already covered by `recent`.
+    # further than the oldest date already covered by `recent`. Pages in
+    # `files[]` are ordered newest-chunk-first, so once we hit a page whose
+    # filings are ENTIRELY older than since_date, every remaining page is
+    # older still — stop there instead of walking a company's full decades
+    # of SEC history (this was the main cause of very slow per-ticker
+    # runtimes for old/large filers with hundreds of historical filings).
     oldest_recent = min(recent.get("filingDate", ["9999-99-99"]), default="9999-99-99")
-    if since_date and since_date < oldest_recent:
+    need_older_pages = (since_date and since_date < oldest_recent) or since_date is None
+
+    if need_older_pages:
         for page in data.get("filings", {}).get("files", []):
             page_url = f"https://data.sec.gov/submissions/{page['name']}"
             page_data = _get_json(page_url)
             time.sleep(SLEEP_BETWEEN_REQUESTS)
-            if page_data:
-                _extract(page_data)
-    elif since_date is None:
-        # Full backfill with no since_date: also walk every paginated file.
-        for page in data.get("filings", {}).get("files", []):
-            page_url = f"https://data.sec.gov/submissions/{page['name']}"
-            page_data = _get_json(page_url)
-            time.sleep(SLEEP_BETWEEN_REQUESTS)
-            if page_data:
-                _extract(page_data)
+            if not page_data:
+                continue
+            page_dates = page_data.get("filingDate", [])
+            _extract(page_data)
+            if since_date and page_dates and max(page_dates) < since_date:
+                break  # this whole page (and everything after) predates our cutoff
 
     return filings_out
 
