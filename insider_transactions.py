@@ -176,8 +176,20 @@ def fetch_form4_index(cik: int, since_date: Optional[str] = None) -> list[dict]:
 # ─────────────────────────────────────────────────────────────
 
 def fetch_ownership_xml(cik: int, accession_number: str, primary_document: str) -> Optional[str]:
+    """
+    IMPORTANT: `primaryDocument` from the submissions API, for ownership
+    forms (3/4/5), points to the XSLT-RENDERED HTML view — e.g.
+    "xslF345X06/form4.xml". Despite the .xml extension, fetching that path
+    returns HTML (Content-Type: text/html), not the machine-readable XML.
+    The actual raw XML lives in the SAME accession folder, under the SAME
+    filename, WITHOUT the "xslF345Xnn/" prefix — so we strip it here.
+    (Confirmed against a live AAPL filing during development: the prefixed
+    path served an HTML page that failed XML parsing on every single
+    filing, which is what caused the original 0-rows-for-everyone bug.)
+    """
     accession_nodash = accession_number.replace("-", "")
-    url = ARCHIVES_BASE.format(cik=cik, accession_nodash=accession_nodash, doc=primary_document)
+    raw_filename = primary_document.rsplit("/", 1)[-1]  # drop any "xslF345Xnn/" prefix
+    url = ARCHIVES_BASE.format(cik=cik, accession_nodash=accession_nodash, doc=raw_filename)
     try:
         resp = requests.get(url, headers=SEC_HEADERS, timeout=30)
         time.sleep(SLEEP_BETWEEN_REQUESTS)
