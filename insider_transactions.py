@@ -201,14 +201,36 @@ def fetch_ownership_xml(cik: int, accession_number: str, primary_document: str) 
 
 
 def _text_or_none(el, path) -> Optional[str]:
+    """
+    Returns the stripped text content, or None if genuinely absent/empty.
+    Handles the common Form 4 XML pattern where a field (e.g. price on an
+    Award transaction, which legitimately has no price) has NO <value>
+    child — only a <footnoteId/> sibling — in which case `found.text` is
+    just XML pretty-print whitespace between tags, not real data. Without
+    stripping, that whitespace string ("\\n                    ") gets
+    passed to float() downstream and crashes the whole ticker's run.
+    """
     found = el.find(path)
     if found is None:
         return None
-    # Ownership XML values are typically wrapped like <value>123</value>
     val = found.find("value")
-    if val is not None:
-        return val.text
-    return found.text
+    text = val.text if val is not None else found.text
+    if text is None:
+        return None
+    text = text.strip()
+    return text if text else None
+
+
+def _to_float(value: Optional[str]) -> Optional[float]:
+    """Safe float conversion — returns None instead of raising, since
+    filing-agent-specific XML quirks are common across thousands of
+    filers and one bad value shouldn't abort an entire ticker's run."""
+    if not value:
+        return None
+    try:
+        return float(value)
+    except ValueError:
+        return None
 
 
 def parse_form4_xml(
@@ -267,9 +289,9 @@ def parse_form4_xml(
                     "is_ten_pct_owner": owner["is_ten_pct"],
                     "transaction_date": tx_date,
                     "transaction_code": code,
-                    "shares": float(shares) if shares else None,
-                    "price_per_share": float(price) if price else None,
-                    "shares_owned_after": float(shares_after) if shares_after else None,
+                    "shares": _to_float(shares),
+                    "price_per_share": _to_float(price),
+                    "shares_owned_after": _to_float(shares_after),
                     "ownership_type": own_type,
                     "transaction_index": idx,
                 })
@@ -290,7 +312,10 @@ def fetch_transactions_for_ticker(
         xml_text = fetch_ownership_xml(cik, f["accession_number"], f["primary_document"])
         if xml_text is None:
             continue
-        df = parse_form4_xml(xml_text, ticker, cik, f["accession_number"], f["filing_date"])
+        try:
+            df = parse_form4_xml(xml_text, ticker, cik, f["accession_number"], f["filing_date"])
+        except Exception:
+            continue  # one malformed/unusual filing shouldn't lose the whole ticker's run
         if not df.empty:
             frames.append(df)
 
