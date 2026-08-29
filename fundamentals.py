@@ -261,31 +261,60 @@ def parse_companyfacts(ticker: str, cik: int, facts: dict) -> pd.DataFrame:
 
     # ── Stage 1: resolve SAME-FILING duplicates ─────────────────────────
     # A single filing often reports MORE than one observation under the
-    # same nominal (metric, fy, fp, form) label — e.g. a 10-Q's income
-    # statement shows both the 3-month (quarterly) AND 9-month (YTD
-    # cumulative) figure for the same line item, both with the same
-    # `end` date and the SAME filed_date (same filing). A balance sheet
-    # similarly often shows the current AND a prior comparative column
-    # under the same label. Because these ties share filed_date, sorting
-    # by filed_date alone can't separate them — it would keep whichever
-    # happened to appear first in the raw JSON, effectively at random.
-    # Duration facts (have period_start): keep the observation whose
-    # length is closest to the expected quarter/year length.
-    # Instant facts (no period_start, e.g. Assets): keep the one with
-    # the LATEST end date — the filing's own current-period figure,
-    # not an earlier comparative column.
+    # same nominal (metric, fy, fp, form) label. Two genuinely different
+    # situations hide behind that label, and they need different fixes:
+    #
+    # (a) SAME period_end, different period_start -- e.g. a 10-Q's income
+    #     statement showing both the 3-month (quarterly) AND 9-month
+    #     (YTD cumulative) figure for the same line item. Here comparing
+    #     duration length against the expected quarter/year length is the
+    #     right way to pick the discrete (non-cumulative) figure.
+    #
+    # (b) DIFFERENT period_end values entirely -- e.g. a 10-K's 3-year
+    #     comparative income statement, where SEC tags EVERY year shown
+    #     with the SAME `fy` (the filing's own fiscal year focus, not the
+    #     year each column actually covers). Here the current/headline
+    #     figure is simply whichever has the LATEST period_end -- no
+    #     duration comparison is needed, and comparing duration length is
+    #     actively wrong: a comparative period that happens to span a
+    #     leap-year February 29 is "365 days" (matching the FY heuristic
+    #     exactly) while a genuine, more recent annual period without a
+    #     leap day is 364 days -- diff 0 vs diff 1 -- so the OLDER,
+    #     comparative column would incorrectly win. This is exactly the
+    #     bug that let a stale prior-year figure silently overwrite (via
+    #     ON CONFLICT DO NOTHING) the true, current-year value in the
+    #     database for hundreds of tickers.
+    #
+    # Fix: first resolve (a) within each distinct period_end group, THEN
+    # resolve (b) by period_end recency across whatever remains.
     def _resolve_same_filing_duplicates(group: pd.DataFrame) -> pd.DataFrame:
         # pandas excludes groupby-key columns from `group` inside .apply();
         # `group.name` carries the key tuple in groupby-column order:
         # (metric, fiscal_year, fiscal_period, form_type, filed_date).
         fiscal_period = group.name[2]
+
+        # Resolves case (a): among candidates that share the SAME
+        # period_end (e.g. quarterly-discrete vs YTD-cumulative), rank by
+        # closeness to the expected duration. Duration length is a
+        # meaningful signal here because period_end is fixed within each
+        # sub-group -- there's no leap-year trap since we aren't yet
+        # comparing across different end dates.
         if group["period_start"].notna().all():
             expected_days = 365 if fiscal_period == "FY" else 91
             duration_days = (group["period_end"] - group["period_start"]).dt.days
-            group = group.assign(_duration_diff=(duration_days - expected_days).abs())
-            group = group.sort_values(["_duration_diff", "period_end"], ascending=[True, False])
+            group = group.assign(_diff=(duration_days - expected_days).abs())
+            group = group.sort_values(["period_end", "_diff"])
+            group = group.drop_duplicates(subset=["period_end"], keep="first")
+            group = group.drop(columns=["_diff"])
         else:
-            group = group.sort_values("period_end", ascending=False)
+            group = group.drop_duplicates(subset=["period_end"], keep="first")
+
+        # Resolves case (b): if the filing still reports MULTIPLE distinct
+        # periods under this (metric, fy, fp, form, filed_date) label (a
+        # multi-year comparative table), the current/headline figure is
+        # always the one with the LATEST period_end. No duration
+        # heuristic here -- see the leap-year note above.
+        group = group.sort_values("period_end", ascending=False)
         return group.iloc[[0]]
 
     df = (
@@ -294,7 +323,6 @@ def parse_companyfacts(ticker: str, cik: int, facts: dict) -> pd.DataFrame:
             group_keys=True,
         )
         .apply(_resolve_same_filing_duplicates, include_groups=False)
-        .drop(columns=["_duration_diff"], errors="ignore")
         .reset_index(level=[0, 1, 2, 3, 4])
         .reset_index(drop=True)
     )
