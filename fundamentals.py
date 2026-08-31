@@ -174,6 +174,45 @@ def _get_or_create_id(engine: Engine, table: str, name: str, cache: dict) -> int
     return row[0]
 
 
+_LOOKUP_TABLES = {
+    "metric": "metric_lookup",
+    "unit": "unit_lookup",
+    "form_type": "form_type_lookup",
+    "source_tag": "source_tag_lookup",
+}
+
+
+def load_lookup_caches(engine: Engine) -> dict[str, dict[str, int]]:
+    """
+    Pre-loads all four lookup tables (name -> id) in ONE query each,
+    instead of resolving them lazily via one network round-trip per
+    distinct value per ticker.
+
+    Why this matters: these lookup tables barely ever grow after the
+    first handful of ingests (there are only ~40 canonical metrics,
+    ~60 source tags, a few units/form types total) -- so re-resolving
+    them from scratch for every single ticker is almost entirely
+    redundant round-trips. Against a hosted DB with meaningful
+    per-round-trip latency (Neon), that redundancy was costing on the
+    order of tens of seconds PER TICKER (measured: ~49s of a ~70s total
+    ingest time was pure lookup-id resolution) -- for a several-hundred-
+    ticker run that adds up to hours of pure overhead.
+
+    Pass the returned dict into ingest_fundamentals_for_ticker /
+    ingest_fundamentals_for_universe via `caches=` so it's built ONCE
+    per run and shared across every ticker. Any name not yet in the
+    cache (a genuinely new metric/tag) still falls through to
+    _get_or_create_id's normal SELECT-or-INSERT path on first use within
+    the run.
+    """
+    caches: dict[str, dict[str, int]] = {}
+    with engine.connect() as conn:
+        for key, table in _LOOKUP_TABLES.items():
+            rows = conn.execute(text(f"SELECT name, id FROM {table}")).fetchall()
+            caches[key] = {name: id_ for name, id_ in rows}
+    return caches
+
+
 # ── fetch ──────────────────────────────────────────────────────────────────
 def fetch_companyfacts(cik: int) -> dict | None:
     """Downloads the raw companyfacts JSON for one CIK. Returns None (not
@@ -379,18 +418,31 @@ def _upsert_batch(conn, batch: list[dict]) -> int:
     return result.rowcount
 
 
-def upsert_fundamentals(df: pd.DataFrame, engine: Engine) -> dict:
+def upsert_fundamentals(
+    df: pd.DataFrame, engine: Engine, caches: dict[str, dict[str, int]] | None = None
+) -> dict:
     """
     Resolves lookup ids and writes rows into `fundamentals` in batches.
     ON CONFLICT DO NOTHING — see module docstring for why existing rows
     are treated as immutable. Returns {"attempted": N, "inserted": N};
     inserted < attempted just means those rows already existed from a
     prior run (expected/healthy on repeat ingests, not an error).
+
+    `caches`: pass the dict from load_lookup_caches(engine) when ingesting
+    many tickers in one run, so lookup ids are resolved once for the
+    whole run instead of once per ticker (see load_lookup_caches
+    docstring). Omit for one-off/standalone calls -- a fresh, empty set
+    of caches is created automatically, same as before.
     """
     if df.empty:
         return {"attempted": 0, "inserted": 0}
 
-    metric_cache, unit_cache, form_cache, source_cache = {}, {}, {}, {}
+    if caches is None:
+        caches = {"metric": {}, "unit": {}, "form_type": {}, "source_tag": {}}
+    metric_cache = caches["metric"]
+    unit_cache = caches["unit"]
+    form_cache = caches["form_type"]
+    source_cache = caches["source_tag"]
 
     def _to_date_or_none(v):
         if pd.isna(v):
@@ -437,7 +489,10 @@ def _get_latest_known_filed_date(ticker: str, engine: Engine):
 
 
 def ingest_fundamentals_for_ticker(
-    ticker: str, engine: Engine, skip_if_no_new_filing: bool = False
+    ticker: str,
+    engine: Engine,
+    skip_if_no_new_filing: bool = False,
+    caches: dict[str, dict[str, int]] | None = None,
 ) -> dict:
     cik = get_cik_for_ticker(ticker)
     if cik is None:
@@ -461,7 +516,7 @@ def ingest_fundamentals_for_ticker(
         return {"ticker": ticker, "status": "no_facts"}
 
     df = parse_companyfacts(ticker, cik, facts)
-    result = upsert_fundamentals(df, engine)
+    result = upsert_fundamentals(df, engine, caches=caches)
     print(f"✅ {ticker}: {result['inserted']}/{result['attempted']} rows inserted.")
     return {"ticker": ticker, "status": "ok", **result}
 
@@ -481,13 +536,22 @@ def ingest_fundamentals_for_universe(
     filed anything since last week. Leave False for full
     backfills/repairs where you deliberately want to re-process
     everything regardless of freshness.
+
+    Loads the lookup-id caches ONCE up front (see load_lookup_caches)
+    and shares them across every ticker in this run -- see that
+    function's docstring for why this matters for run time.
     """
+    caches = load_lookup_caches(engine)
+
     results = []
     for i, ticker in enumerate(tickers):
         try:
             results.append(
                 ingest_fundamentals_for_ticker(
-                    ticker, engine, skip_if_no_new_filing=skip_if_no_new_filing
+                    ticker,
+                    engine,
+                    skip_if_no_new_filing=skip_if_no_new_filing,
+                    caches=caches,
                 )
             )
         except Exception as e:
