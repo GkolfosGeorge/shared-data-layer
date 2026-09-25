@@ -107,6 +107,27 @@ XBRL_TAG_MAP: dict[str, list[str]] = {
     "LongTermDebtNoncurrent": ["LongTermDebtNoncurrent"],
     "LongTermDebtCurrent": ["LongTermDebtCurrent"],
     "DebtCurrent": ["DebtCurrent"],
+    # Added 2026-09-24: ~52% of tickers had no leverage data via the two
+    # tags above (uniform across sectors -> our tag list, not their
+    # balance sheets). Each is its OWN metric, never merged into
+    # LongTermDebtNoncurrent above: a company can drift between tags
+    # year to year, and merging would let a year-over-year comparison
+    # silently mix two different measures. quality_scores/piotroski.py
+    # picks whichever measure is present in BOTH years being compared.
+    # Sample check (40 tickers, all still N/A after the two tags above):
+    # LongTermDebt covered 17, the *IncludingCurrentMaturities variant
+    # covered 7 more, *AndCapitalLeaseObligations covered 1 more -> 25/40.
+    # Still uncovered: mostly banks, insurers, REITs, and a few tech
+    # names financed almost entirely by convertible notes (e.g. DDOG,
+    # PLTR) -- expected, not a bug; left as None rather than guessed at 0.
+    "LongTermDebt": ["LongTermDebt"],
+    "LongTermDebtAndCapitalLeaseObligations": ["LongTermDebtAndCapitalLeaseObligations"],
+    "LongTermDebtAndCapitalLeaseObligationsCurrent": [
+        "LongTermDebtAndCapitalLeaseObligationsCurrent"
+    ],
+    "LongTermDebtAndCapitalLeaseObligationsIncludingCurrentMaturities": [
+        "LongTermDebtAndCapitalLeaseObligationsIncludingCurrentMaturities"
+    ],
     "StockholdersEquity": [
         "StockholdersEquity",
         "StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest",
