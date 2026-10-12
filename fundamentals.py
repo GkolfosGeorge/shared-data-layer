@@ -52,6 +52,15 @@ SUBMISSIONS_URL = "https://data.sec.gov/submissions/CIK{cik:010d}.json"
 # informal ~10 req/sec ceiling.
 REQUEST_SLEEP = 0.15
 
+# Stage 0 (Oct 2026): which period_end IS this filing's own period?
+# A 10-Q/10-K also carries comparative columns (same period last year,
+# prior fiscal year-end balance sheet, prior quarter) and the odd
+# subsequent event (a dividend declared after quarter-end). Its own
+# period is the LATEST period_end used by at least half as many metrics
+# as the most-used one. Everything else in that filing is dropped.
+OWN_PERIOD_MIN_SHARE = 0.5
+OWN_PERIOD_TOLERANCE_DAYS = 7   # 52/53-week filers can be off by a day or two
+
 # ── metric -> candidate XBRL us-gaap tags, priority order ────────────────
 # IMPORTANT: canonical metric names here are reverse-engineered from the
 # EXISTING database (found pre-built, ~1.29M rows already in it) so that
@@ -301,6 +310,7 @@ def parse_companyfacts(ticker: str, cik: int, facts: dict) -> pd.DataFrame:
                             "period_end": obs.get("end"),
                             "filed_date": obs.get("filed"),
                             "form_type": obs.get("form"),
+                            "accn": obs.get("accn"),
                         })
 
     _extract(XBRL_TAG_MAP, us_gaap)
@@ -318,6 +328,40 @@ def parse_companyfacts(ticker: str, cik: int, facts: dict) -> pd.DataFrame:
     df["period_start"] = pd.to_datetime(df["period_start"])
     df["period_end"] = pd.to_datetime(df["period_end"])
     df["filed_date"] = pd.to_datetime(df["filed_date"])
+
+    # ── Stage 0: keep only each filing's OWN period ─────────────────────
+    # Every filing (one SEC accession number, `accn`) reports its own
+    # period PLUS comparative columns under the SAME fy/fp label: the same
+    # quarter last year, the prior fiscal-year-end balance sheet, sometimes
+    # the prior quarter, and the odd subsequent event (e.g. a dividend
+    # declared a month after quarter-end). Neither duration length (leap
+    # years, equal-length quarters) nor "latest period_end wins"
+    # (subsequent events) nor filing lag (a fiscal-year-end comparative is
+    # only ~100 days old) separates them reliably. The question that does:
+    # "what date do MOST of this filing's numbers describe?"
+    #
+    # Example, a Q3-2016 10-Q:
+    #     2016-09-30 -> ~40 metrics   <- own period (kept)
+    #     2015-09-30 -> ~25 metrics   (same quarter last year)
+    #     2015-12-31 -> ~15 metrics   (prior year-end balance sheet)
+    #     2016-10-31 ->   1 metric    (dividend declared after quarter-end)
+    # In a 10-K, current and prior year have similar counts -> the LATEST
+    # one that clears the OWN_PERIOD_MIN_SHARE bar wins.
+    # If a filing tagged ONLY a comparative for some metric, that metric
+    # simply gets no row from this filing: missing is better than wrong.
+    df["accn"] = df["accn"].fillna(df["form_type"] + "|" + df["filed_date"].astype(str))
+    n = df.groupby(["accn", "period_end"])["metric"].nunique().rename("n").reset_index()
+    n["best"] = n.groupby("accn")["n"].transform("max")
+    own_end = (
+        n[n["n"] >= OWN_PERIOD_MIN_SHARE * n["best"]]
+        .groupby("accn")["period_end"].max().rename("_own_end")
+    )
+    df = df.join(own_end, on="accn")
+    df = df[
+        (df["period_end"] - df["_own_end"]).abs().dt.days <= OWN_PERIOD_TOLERANCE_DAYS
+    ].drop(columns="_own_end")
+    if df.empty:
+        return df
 
     # ── Stage 1: resolve SAME-FILING duplicates ─────────────────────────
     # A single filing often reports MORE than one observation under the
@@ -347,6 +391,10 @@ def parse_companyfacts(ticker: str, cik: int, facts: dict) -> pd.DataFrame:
     #
     # Fix: first resolve (a) within each distinct period_end group, THEN
     # resolve (b) by period_end recency across whatever remains.
+    #
+    # Since Stage 0 (Oct 2026), case (b) can only still occur within the
+    # OWN_PERIOD_TOLERANCE_DAYS window (e.g. a 52/53-week filer tagging
+    # one fact a day apart); the recency rule below is kept as the tie-break.
     def _resolve_same_filing_duplicates(group: pd.DataFrame) -> pd.DataFrame:
         # pandas excludes groupby-key columns from `group` inside .apply();
         # `group.name` carries the key tuple in groupby-column order:

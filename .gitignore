@@ -5,3 +5,7 @@ __pycache__/
 *.pyc
 *.egg-info/
 .env
+
+# Oct 2026 fundamentals repair: local backups & run logs
+backup_20261007/
+repair_*_log.csv
