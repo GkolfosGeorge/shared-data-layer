@@ -183,8 +183,15 @@ def main():
         raise SystemExit("Old fundamentals.py loaded -- run from the shared-data-layer folder.")
 
     eng = get_engine()
+    since = os.environ.get("ONLY_INSERTED_SINCE")   # e.g. 2026-10-12: only tickers a run touched
     with eng.connect() as c:
-        tickers = [r[0] for r in c.execute(text("SELECT DISTINCT ticker FROM fundamentals ORDER BY 1"))]
+        if since:
+            tickers = [r[0] for r in c.execute(text(
+                "SELECT DISTINCT ticker FROM fundamentals "
+                "WHERE inserted_at >= CAST(:d AS DATE) ORDER BY 1"), {"d": since})]
+            print(f"ONLY_INSERTED_SINCE={since}: {len(tickers)} tickers")
+        else:
+            tickers = [r[0] for r in c.execute(text("SELECT DISTINCT ticker FROM fundamentals ORDER BY 1"))]
 
     done = set()
     if os.path.exists(LOG):
@@ -199,7 +206,7 @@ def main():
     if limit:
         todo = todo[:limit]
     start_mb = db_size_mb(eng)
-    print(f"{len(tickers)} tickers in DB, {len(done)} already done, {len(todo)} in this run")
+    print(f"{len(tickers)} tickers selected, {len(done)} already done (log {LOG}), {len(todo)} in this run")
     print(f"DB size at start: {start_mb:.0f} MB (stop at {MAX_DB_MB} MB) | MAX_SHARE = {MAX_SHARE}\n")
 
     caches = F.load_lookup_caches(eng)
