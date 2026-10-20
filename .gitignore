@@ -9,3 +9,6 @@ __pycache__/
 # Oct 2026 fundamentals repair: local backups & run logs
 backup_20261007/
 repair_*_log.csv
+
+# v0.1.25 backfill run log
+backfill_v0125_log.csv

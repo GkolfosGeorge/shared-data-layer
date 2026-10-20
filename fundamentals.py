@@ -176,7 +176,48 @@ XBRL_TAG_MAP: dict[str, list[str]] = {
     "PaymentsToAcquirePropertyPlantAndEquipment": ["PaymentsToAcquirePropertyPlantAndEquipment"],
     "PaymentsForRepurchaseOfCommonStock": ["PaymentsForRepurchaseOfCommonStock"],
     "PaymentsOfDividends": ["PaymentsOfDividends", "PaymentsOfDividendsCommonStock"],
+    # ── Added 2026-10 (v0.1.25) ─────────────────────────────────────────
+    # Same rule as the debt tags above: EACH tag is its OWN metric, never
+    # merged, because their definitions differ (e.g. ProductiveAssets =
+    # PP&E + intangibles; PP&E alone is narrower). Readers in
+    # single-asset-analyzer/valuation pick a fallback per company.
+    # Survey of 778 tickers (dev/tag_discovery_202610.py, read-only):
+    #   capex: 167 companies had CFO but no PaymentsToAcquirePropertyPlantAndEquipment;
+    #     ~110 gain capex from the tags below (98 via ProductiveAssets alone).
+    #     Real-estate acquisition/development tags deliberately NOT added:
+    #     a REIT buying buildings is growth, not maintenance capex, and FCF
+    #     yield is the wrong lens for REITs anyway.
+    #   finance leases (~400) and short-term borrowings (~350): so EV counts
+    #     the same debt for every company. Pre-2019 CapitalLease* names and
+    #     operating leases (11 MB) deliberately NOT added.
+    # Estimated cost: ~13 MB on Neon.
+    "PaymentsToAcquireProductiveAssets": ["PaymentsToAcquireProductiveAssets"],
+    "PaymentsToAcquireOtherPropertyPlantAndEquipment": [
+        "PaymentsToAcquireOtherPropertyPlantAndEquipment"
+    ],
+    "PaymentsForCapitalImprovements": ["PaymentsForCapitalImprovements"],
+    "PaymentsToAcquireOilAndGasPropertyAndEquipment": [
+        "PaymentsToAcquireOilAndGasPropertyAndEquipment"
+    ],
+    "PaymentsToAcquireOilAndGasProperty": ["PaymentsToAcquireOilAndGasProperty"],
+    "PaymentsForConstructionInProcess": ["PaymentsForConstructionInProcess"],
+    "PaymentsToAcquireMachineryAndEquipment": ["PaymentsToAcquireMachineryAndEquipment"],
+    "FinanceLeaseLiability": ["FinanceLeaseLiability"],
+    "FinanceLeaseLiabilityCurrent": ["FinanceLeaseLiabilityCurrent"],
+    "FinanceLeaseLiabilityNoncurrent": ["FinanceLeaseLiabilityNoncurrent"],
+    "ShortTermBorrowings": ["ShortTermBorrowings"],
+    "CommercialPaper": ["CommercialPaper"],
 }
+
+# The 12 metrics added in v0.1.25 (used by the one-off backfill script).
+NEW_METRICS_V0125 = [
+    "PaymentsToAcquireProductiveAssets", "PaymentsToAcquireOtherPropertyPlantAndEquipment",
+    "PaymentsForCapitalImprovements", "PaymentsToAcquireOilAndGasPropertyAndEquipment",
+    "PaymentsToAcquireOilAndGasProperty", "PaymentsForConstructionInProcess",
+    "PaymentsToAcquireMachineryAndEquipment", "FinanceLeaseLiability",
+    "FinanceLeaseLiabilityCurrent", "FinanceLeaseLiabilityNoncurrent",
+    "ShortTermBorrowings", "CommercialPaper",
+]
 
 
 # ── lookup table get-or-create ────────────────────────────────────────────
