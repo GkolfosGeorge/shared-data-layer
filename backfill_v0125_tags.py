@@ -14,6 +14,7 @@ Run from the shared data layer folder, AFTER check_tagmap_v0125.py was clean:
 - Connection with pre-ping/recycle/keepalives (Sept 2026: a plain one died silently overnight).
 """
 
+import csv
 import os
 import sys
 import time
@@ -26,6 +27,7 @@ from sqlalchemy import create_engine, text
 import fundamentals as F
 
 LOG = "backfill_v0125_log.csv"
+LOG_COLS = ["ticker", "status", "rows", "metrics", "inserted", "error"]   # same columns on EVERY line
 STOP_AT_MB = 470
 DRY_RUN_TICKERS = 10
 
@@ -60,8 +62,10 @@ def main(write: bool):
 
     done = set()
     if write and os.path.exists(LOG):
-        prev = pd.read_csv(LOG)
-        done = set(prev.loc[prev["status"] == "ok", "ticker"])
+        # read raw: logs written before the column fix have ragged lines,
+        # so "ok anywhere on the line" is the robust test
+        with open(LOG, newline="", encoding="utf-8") as fh:
+            done = {r[0] for r in csv.reader(fh) if r and "ok" in r[1:]}
     todo = [(t, cik) for t, cik in tc if t not in done]
     if not write:
         todo = todo[:DRY_RUN_TICKERS]
@@ -72,7 +76,8 @@ def main(write: bool):
     caches = F.load_lookup_caches(eng) if write else None
     t0, total = time.time(), 0
     for i, (t, cik) in enumerate(todo, 1):
-        rec = {"ticker": t}
+        rec = {c: None for c in LOG_COLS}
+        rec["ticker"] = t
         try:
             facts = F.fetch_companyfacts(int(cik))
             df = F.parse_companyfacts(t, int(cik), facts) if facts else pd.DataFrame()
@@ -87,10 +92,12 @@ def main(write: bool):
         except Exception as e:
             rec["status"], rec["error"] = "error", str(e)[:200]
         if write:
-            pd.DataFrame([rec]).to_csv(LOG, mode="a", header=not os.path.exists(LOG), index=False)
-        flag = "" if rec["status"] == "ok" else "   <-- " + rec.get("error", "")
-        print(f"[{i}/{len(todo)}] {t:6s} γραμμές={rec.get('rows', '-'):>4} "
-              f"μεγέθη={rec.get('metrics', '-')} εγγράφηκαν={rec.get('inserted', '-')}{flag}")
+            pd.DataFrame([rec], columns=LOG_COLS).to_csv(LOG, mode="a", header=not os.path.exists(LOG),
+                                                         index=False)
+        flag = "" if rec["status"] == "ok" else "   <-- " + (rec["error"] or "")
+        dash = lambda v: "-" if v is None else v
+        print(f"[{i}/{len(todo)}] {t:6s} γραμμές={dash(rec['rows']):>4} "
+              f"μεγέθη={dash(rec['metrics'])} εγγράφηκαν={dash(rec['inserted'])}{flag}")
         time.sleep(F.REQUEST_SLEEP)
         if write and i % 50 == 0:
             mb = db_mb(eng)
@@ -103,11 +110,13 @@ def main(write: bool):
 
     print(f"\n── Τέλος: {total:,} νέες γραμμές | βάση {db_mb(eng):.0f} MB (ξεκίνησε {start_mb:.0f}) ──")
     if write:
-        log = pd.read_csv(LOG)
-        bad = log[log["status"] != "ok"]
-        print(f"ok: {(log['status'] == 'ok').sum()}  σφάλματα: {len(bad)}")
-        if len(bad):
-            print(bad.to_string(index=False))
+        with open(LOG, newline="", encoding="utf-8") as fh:
+            lines = [r for r in csv.reader(fh) if r and r[0] != "ticker"]
+        ok = {r[0] for r in lines if "ok" in r[1:]}
+        still_bad = sorted({r[0] for r in lines} - ok)
+        print(f"ok: {len(ok)}  ακόμα με σφάλμα: {len(still_bad)}"
+              + (f"  → {', '.join(still_bad)}" if still_bad else ""))
+        if still_bad:
             print("Ξανατρέξε το ίδιο command: θα δοκιμάσει μόνο όσα απέτυχαν.")
         with eng.connect() as c:
             per = pd.read_sql(text("""
