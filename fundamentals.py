@@ -207,6 +207,46 @@ XBRL_TAG_MAP: dict[str, list[str]] = {
     "FinanceLeaseLiabilityNoncurrent": ["FinanceLeaseLiabilityNoncurrent"],
     "ShortTermBorrowings": ["ShortTermBorrowings"],
     "CommercialPaper": ["CommercialPaper"],
+    # ── Added 2026-11 (v0.1.26) ─────────────────────────────────────────
+    # Same rule again: EACH tag is its OWN metric, never merged. These tags
+    # OVERLAP as part and whole, so they must never be summed blindly:
+    # PFE 2026-06: debt securities 7.28 are PART of short-term investments
+    # 10.72 (cash 0.98 + 10.72 = Yahoo's 11.70). Readers choose the rule.
+    # Measured on 203 non-financial companies against Yahoo, within 5%:
+    #   cash + ShortTermInvestments (before)   141
+    #   sum of all "current" tags              185
+    #   largest "current" tag                  190
+    #   cash + footnote total                  173 (saves 2, breaks 18)
+    # See single-asset-analyzer dev/cash_values_202611.py and cash_probe_202611.py.
+    # "Current" securities lines; the last one replaced the AFS tags from ~2024.
+    "MarketableSecuritiesCurrent": ["MarketableSecuritiesCurrent"],
+    "DebtSecuritiesCurrent": ["DebtSecuritiesCurrent"],
+    "AvailableForSaleSecuritiesDebtSecuritiesCurrent": [
+        "AvailableForSaleSecuritiesDebtSecuritiesCurrent"
+    ],
+    "AvailableForSaleSecuritiesCurrent": ["AvailableForSaleSecuritiesCurrent"],
+    "OtherShortTermInvestments": ["OtherShortTermInvestments"],
+    "DebtSecuritiesAvailableForSaleExcludingAccruedInterestCurrent": [
+        "DebtSecuritiesAvailableForSaleExcludingAccruedInterestCurrent"
+    ],
+    # Cash INCLUDED: replaces the cash line, is never added to it.
+    "CashCashEquivalentsAndShortTermInvestments": ["CashCashEquivalentsAndShortTermInvestments"],
+    # Footnote totals: may hold long-term securities. Stored, NOT used by the
+    # EV rule; a one-off exception must show why (KLAC has no current tag).
+    "AvailableForSaleSecuritiesDebtSecurities": ["AvailableForSaleSecuritiesDebtSecurities"],
+    "MarketableSecurities": ["MarketableSecurities"],
+    # Convertible debt. For DDOG, PD, DXCM these are the ONLY debt tags, so
+    # without them debt is unknown and EV is missing (see the 2026-09 note
+    # above). Whether they add to ordinary debt in older years is unverified.
+    "ConvertibleNotesPayable": ["ConvertibleNotesPayable"],
+    "ConvertibleNotesPayableCurrent": ["ConvertibleNotesPayableCurrent"],
+    "ConvertibleLongTermNotesPayable": ["ConvertibleLongTermNotesPayable"],
+    "ConvertibleDebt": ["ConvertibleDebt"],
+    "ConvertibleDebtCurrent": ["ConvertibleDebtCurrent"],
+    "ConvertibleDebtNoncurrent": ["ConvertibleDebtNoncurrent"],
+    "ConvertibleSubordinatedDebt": ["ConvertibleSubordinatedDebt"],
+    "ConvertibleSubordinatedDebtCurrent": ["ConvertibleSubordinatedDebtCurrent"],
+    "ConvertibleSubordinatedDebtNoncurrent": ["ConvertibleSubordinatedDebtNoncurrent"],
 }
 
 # The 12 metrics added in v0.1.25 (used by the one-off backfill script).
@@ -217,6 +257,18 @@ NEW_METRICS_V0125 = [
     "PaymentsToAcquireMachineryAndEquipment", "FinanceLeaseLiability",
     "FinanceLeaseLiabilityCurrent", "FinanceLeaseLiabilityNoncurrent",
     "ShortTermBorrowings", "CommercialPaper",
+]
+
+# The 18 metrics added in v0.1.26 (used by the one-off backfill script).
+NEW_METRICS_V0126 = [
+    "MarketableSecuritiesCurrent", "DebtSecuritiesCurrent",
+    "AvailableForSaleSecuritiesDebtSecuritiesCurrent", "AvailableForSaleSecuritiesCurrent",
+    "OtherShortTermInvestments", "DebtSecuritiesAvailableForSaleExcludingAccruedInterestCurrent",
+    "CashCashEquivalentsAndShortTermInvestments", "AvailableForSaleSecuritiesDebtSecurities",
+    "MarketableSecurities", "ConvertibleNotesPayable", "ConvertibleNotesPayableCurrent",
+    "ConvertibleLongTermNotesPayable", "ConvertibleDebt", "ConvertibleDebtCurrent",
+    "ConvertibleDebtNoncurrent", "ConvertibleSubordinatedDebt",
+    "ConvertibleSubordinatedDebtCurrent", "ConvertibleSubordinatedDebtNoncurrent",
 ]
 
 
