@@ -247,6 +247,29 @@ XBRL_TAG_MAP: dict[str, list[str]] = {
     "ConvertibleSubordinatedDebt": ["ConvertibleSubordinatedDebt"],
     "ConvertibleSubordinatedDebtCurrent": ["ConvertibleSubordinatedDebtCurrent"],
     "ConvertibleSubordinatedDebtNoncurrent": ["ConvertibleSubordinatedDebtNoncurrent"],
+    # ── Added 2026-11 (v0.1.27) ─────────────────────────────────────────
+    # Again each tag is its OWN metric, never merged.
+    # Cash INCLUDING restricted cash. Since ASU 2016-18 (2018) many companies
+    # stopped tagging CashAndCashEquivalentsAtCarryingValue in 10-Qs and only
+    # report this total (PG since 2019, MMM since 2017): their EV went missing.
+    # Restricted cash is NOT spendable (client funds, escrow): on 700 companies
+    # reporting both, this tag exceeds cash alone by > 5% for 252 (ICE, CME, ADP
+    # by 10× or more). So readers use it only when the cash tag is missing AND
+    # the company's own history shows the two were equal (see
+    # single-asset-analyzer dev/restricted_cash_202611.py).
+    "CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalents": [
+        "CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalents"
+    ],
+    "CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalentsIncludingDisposalGroupAndDiscontinuedOperations": [
+        "CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalentsIncludingDisposalGroupAndDiscontinuedOperations"
+    ],
+    # Debt in tags we didn't read (dev/ev_gap_discovery_202611.py: these equal
+    # Yahoo's debt for GME, ILMN, OMC, HST, LKQ). Stored now, used only after
+    # their own overlap check with the existing debt tags.
+    "LongTermNotesPayable": ["LongTermNotesPayable"],
+    "NotesPayable": ["NotesPayable"],
+    "NotesPayableCurrent": ["NotesPayableCurrent"],
+    "DebtAndCapitalLeaseObligations": ["DebtAndCapitalLeaseObligations"],
 }
 
 # The 12 metrics added in v0.1.25 (used by the one-off backfill script).
@@ -269,6 +292,13 @@ NEW_METRICS_V0126 = [
     "ConvertibleLongTermNotesPayable", "ConvertibleDebt", "ConvertibleDebtCurrent",
     "ConvertibleDebtNoncurrent", "ConvertibleSubordinatedDebt",
     "ConvertibleSubordinatedDebtCurrent", "ConvertibleSubordinatedDebtNoncurrent",
+]
+
+# The 6 metrics added in v0.1.27 (used by the one-off backfill script).
+NEW_METRICS_V0127 = [
+    "CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalents",
+    "CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalentsIncludingDisposalGroupAndDiscontinuedOperations",
+    "LongTermNotesPayable", "NotesPayable", "NotesPayableCurrent", "DebtAndCapitalLeaseObligations",
 ]
 
 
