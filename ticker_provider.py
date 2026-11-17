@@ -194,26 +194,30 @@ def _scrape_tickers(index_name: str) -> list[str]:
         if t and not t.isdigit() and not re.match(r"^\[?\d+\]?$", t) and len(t) <= 15
     ]
 
+    return _clean_tickers(tickers, index_name, cfg.get("suffix"))
+
+
+def _clean_tickers(tickers: list[str], index_name: str, suffix: str | None) -> list[str]:
+    """
+    Wikipedia symbols → the symbols yfinance and the SEC use.
+
+    The dot means two different things (v0.1.28 fix):
+      - European indices: an exchange suffix ("ASML.AS") → cut it, add ours.
+      - US indices: a SHARE CLASS ("BRK.B", "BF.B") → keep it, as a dash: "BRK-B".
+        Before v0.1.28 it was cut too ("BRK.B" → "BRK"): "BRK" has no CIK at the
+        SEC, so the weekly ingest skipped Berkshire and Brown-Forman silently,
+        and yfinance had no price for them (the "BRK.B 404" of the mail card).
+    """
     cleaned = []
-    suffix = cfg.get("suffix")
-
     for t in tickers:
-        # Only strip trailing dot-suffixes (e.g. "ASML.AS" -> "ASML").
-        # Dashes are kept as-is for US tickers (e.g. "BRK-B").
-        base = t.split(".")[0].strip()
-        if not base:
-            continue
-
-        if index_name == "eurostoxx50":
-            cleaned.append(base)
-            continue
-
-        if suffix:
-            cleaned.append(base + suffix)
-        else:
-            # US tickers: replace dots with dashes (yfinance convention)
-            cleaned.append(base.replace(".", "-"))
-
+        t = t.strip()
+        if index_name == "eurostoxx50" or suffix:
+            base = t.split(".")[0].strip()
+            if not base:
+                continue
+            cleaned.append(base if index_name == "eurostoxx50" else base + suffix)
+        elif t.strip("."):
+            cleaned.append(t.replace(".", "-"))
     return sorted(set(cleaned))
 
 
@@ -421,8 +425,8 @@ def get_sp500_ever_between(start, end, folder_path: str = "cache") -> list[str]:
 # CIK <-> ticker mapping (SEC), for the upcoming fundamentals pipeline
 # ─────────────────────────────────────────────────────────────
 
-def _load_sec_ticker_map(folder_path: str = "cache") -> dict[str, int]:
-
+def _load_sec_raw(folder_path: str = "cache") -> dict:
+    """SEC company_tickers.json, cached for a week: {"0": {"cik_str", "ticker", "title"}, ...}"""
     folder = Path(folder_path)
     folder.mkdir(parents=True, exist_ok=True)
     cache_path = folder / "sec_company_tickers.json"
@@ -430,15 +434,23 @@ def _load_sec_ticker_map(folder_path: str = "cache") -> dict[str, int]:
     if cache_path.exists():
         age_hours = (time.time() - cache_path.stat().st_mtime) / 3600
         if age_hours < SEC_TICKER_MAP_CACHE_MAX_AGE_HOURS:
-            raw = json.loads(cache_path.read_text())
-            return {v["ticker"].upper(): int(v["cik_str"]) for v in raw.values()}
+            return json.loads(cache_path.read_text())
 
     print("Downloading SEC company_tickers.json...")
     response = _download_with_retry(SEC_TICKERS_URL, headers=SEC_HEADERS)
     cache_path.write_bytes(response.content)
+    return response.json()
 
-    raw = response.json()
+
+def _load_sec_ticker_map(folder_path: str = "cache") -> dict[str, int]:
+    raw = _load_sec_raw(folder_path)
     return {v["ticker"].upper(): int(v["cik_str"]) for v in raw.values()}
+
+
+def get_sec_companies(folder_path: str = "cache") -> dict[str, tuple[int, str]]:
+    """{ticker: (cik, title)} from today's SEC list (v0.1.28: keeps `companies` current)."""
+    raw = _load_sec_raw(folder_path)
+    return {v["ticker"].upper(): (int(v["cik_str"]), v["title"]) for v in raw.values()}
 
 
 def get_cik_for_ticker(ticker: str, folder_path: str = "cache") -> Optional[int]:

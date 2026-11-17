@@ -43,7 +43,7 @@ import requests
 from sqlalchemy import text
 from sqlalchemy.engine import Engine
 
-from ticker_provider import get_cik_for_ticker, SEC_HEADERS
+from ticker_provider import get_cik_for_ticker, get_sec_companies, SEC_HEADERS
 
 COMPANYFACTS_URL = "https://data.sec.gov/api/xbrl/companyfacts/CIK{cik:010d}.json"
 SUBMISSIONS_URL = "https://data.sec.gov/submissions/CIK{cik:010d}.json"
@@ -713,6 +713,58 @@ def ingest_fundamentals_for_ticker(
     return {"ticker": ticker, "status": "ok", **result}
 
 
+def companies_changes(existing: dict[str, tuple], sec: dict[str, tuple]) -> list[dict]:
+    """
+    Rows of `companies` to write so they match today's SEC list (v0.1.28).
+    existing / sec: {ticker: (cik, title)}. One dict per change, `kind`:
+        "νέα"       ticker not in companies at all   (VMRK, SKYD, VYLR: data, but invisible)
+        "άλλο CIK"  same ticker, the SEC gives another CIK   (XOM 34088 → 2115436)
+        "τίτλος"    same CIK, new name                    ("EXXON MOBIL CORP" → "ExxonMobil Holdings")
+    Tickers that are only in `companies` are left alone (old tickers keep their history).
+    """
+    out = []
+    for t, (cik, title) in sorted(sec.items()):
+        if t not in existing:
+            kind = "νέα"
+        elif existing[t][0] != cik:
+            kind = "άλλο CIK"
+        elif (existing[t][1] or "") != (title or ""):
+            kind = "τίτλος"
+        else:
+            continue
+        old = existing.get(t, (None, None))
+        out.append({"ticker": t, "cik": cik, "title": title, "kind": kind,
+                    "old_cik": old[0], "old_title": old[1]})
+    return out
+
+
+def sync_companies(tickers: list[str], engine: Engine, folder_path: str = "cache",
+                   write: bool = True) -> list[dict]:
+    """
+    Brings `companies` up to date for `tickers` (those the SEC lists today).
+    Why (17/11/2026): `companies` was filled once and never updated, so VMRK, SKYD
+    and VYLR had data from the weekly ingest but no `companies` row, and the
+    analyzer (fundamentals JOIN companies) never saw them. ONE read + ONE write.
+    write=False: only returns what would change.
+    """
+    sec_all = get_sec_companies(folder_path)
+    sec = {t: sec_all[t.upper()] for t in tickers if t.upper() in sec_all}
+    with engine.connect() as conn:
+        rows = conn.execute(text("SELECT ticker, cik, title FROM companies WHERE ticker = ANY(:t)"),
+                            {"t": list(sec)}).fetchall()
+    existing = {r[0]: (int(r[1]) if r[1] is not None else None, r[2]) for r in rows}
+    changes = companies_changes(existing, sec)
+    if write and changes:
+        with engine.begin() as conn:
+            conn.execute(text("""
+                INSERT INTO companies (ticker, cik, title, updated_at)
+                VALUES (:ticker, :cik, :title, now())
+                ON CONFLICT (ticker) DO UPDATE
+                SET cik = EXCLUDED.cik, title = EXCLUDED.title, updated_at = now()
+            """), [{"ticker": c["ticker"], "cik": c["cik"], "title": c["title"]} for c in changes])
+    return changes
+
+
 def ingest_fundamentals_for_universe(
     tickers: list[str],
     engine: Engine,
@@ -732,7 +784,17 @@ def ingest_fundamentals_for_universe(
     Loads the lookup-id caches ONCE up front (see load_lookup_caches)
     and shares them across every ticker in this run -- see that
     function's docstring for why this matters for run time.
+
+    v0.1.28: first brings `companies` up to date for these tickers (see
+    sync_companies) — the analyzers only see tickers that are in `companies`.
     """
+    try:
+        changes = sync_companies(tickers, engine)
+        print(f"companies: {sum(c['kind'] == 'νέα' for c in changes)} νέες, "
+              f"{sum(c['kind'] == 'άλλο CIK' for c in changes)} με άλλο CIK, "
+              f"{sum(c['kind'] == 'τίτλος' for c in changes)} με νέο τίτλο")
+    except Exception as e:      # never block the ingest itself
+        print(f"⚠️ companies δεν ενημερώθηκε: {type(e).__name__}: {e}")
     caches = load_lookup_caches(engine)
 
     results = []
