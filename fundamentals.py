@@ -401,12 +401,17 @@ def get_latest_filing_date(cik: int) -> "date | None":
 
 
 # ── parse ──────────────────────────────────────────────────────────────────
-def parse_companyfacts(ticker: str, cik: int, facts: dict) -> pd.DataFrame:
+def parse_companyfacts(ticker: str, cik: int, facts: dict, relabel: bool = True) -> pd.DataFrame:
     """
     Flattens one company's companyfacts JSON into rows ready for the
     `fundamentals` table. One row per (metric, fiscal_year, fiscal_period,
     form_type) — see module docstring for the earliest-filed_date-wins
     dedup rule.
+
+    relabel (v0.1.29, default on): give a correct fiscal year to filings the
+    SEC labels with the same (fy, fp) as an older, different period — see
+    _relabel_fiscal_years. relabel=False = the pre-v0.1.29 parser (dry runs).
+    Periods that stay lost are in df.attrs["unresolved"] (a list of dicts).
     """
     us_gaap = facts.get("facts", {}).get("us-gaap", {})
 
@@ -558,21 +563,127 @@ def parse_companyfacts(ticker: str, cik: int, facts: dict) -> pd.DataFrame:
         .reset_index(drop=True)
     )
 
+    # ── Stage 1b (v0.1.29): mislabeled fiscal years ─────────────────────
+    # Some filers give a NEW filing the SAME (fy, fp) label as an older one
+    # for a DIFFERENT period (CRM: the 10-K for 2026-01-31 says "fy=2025 FY",
+    # like the 10-K for 2025-01-31). Stage 2 below would then keep only the
+    # older filing and silently lose the whole new one. See _relabel_fiscal_years.
+    df["_relabeled"] = False
+    unresolved = pd.DataFrame()
+    if relabel:
+        df, unresolved = _relabel_fiscal_years(df)
+
     # ── Stage 2: resolve ACROSS-FILING duplicates ───────────────────────
     # Now that each filing contributes at most one observation per
     # (metric, fy, fp, form), the same tuple can still recur across
     # LATER filings (e.g. Q1 numbers reappear as comparative data in the
     # Q3 10-Q). Keep the EARLIEST filed_date — the true "first known to
-    # the market" value (see module docstring).
-    df = df.sort_values("filed_date")
+    # the market" value (see module docstring). A row that kept its SEC
+    # label always wins over a relabeled one (v0.1.29), so a relabel can
+    # never push out a row that is already in the database.
+    df = df.sort_values(["_relabeled", "filed_date"])
     df = df.drop_duplicates(
         subset=["ticker", "metric", "fiscal_year", "fiscal_period", "form_type"],
         keep="first",
     )
 
     df["fiscal_year"] = df["fiscal_year"].astype(int)
+    df = df.reset_index(drop=True)
+    # a plain list, NOT a DataFrame: pandas compares attrs on merge/concat and
+    # a DataFrame there makes every later merge of this output raise
+    df.attrs["unresolved"] = unresolved.to_dict("records") if not unresolved.empty else []
+    return df
 
-    return df.reset_index(drop=True)
+
+def _fiscal_year_end(df: pd.DataFrame) -> tuple[int, int] | None:
+    """(month, day) the company's fiscal year ends, from its LATEST 10-K FY period."""
+    fy = df[(df["fiscal_period"] == "FY") & df["form_type"].astype(str).str.startswith("10-K")]
+    if fy.empty:
+        return None
+    end = fy.sort_values("filed_date")["period_end"].iloc[-1]
+    return end.month, min(end.day, 28) if end.month == 2 else end.day
+
+
+def derived_fiscal_year(period_end: pd.Timestamp, fye: tuple[int, int],
+                        tol: int = OWN_PERIOD_TOLERANCE_DAYS) -> int:
+    """
+    The fiscal year a period belongs to = the calendar year in which that
+    fiscal year ENDS (v0.1.29). fye = (month, day) of the fiscal year end.
+        CRM, fye (1, 31): 2026-01-31 → 2026 · 2025-04-30 (Q1) → 2026
+        MTD, fye (12, 31): 2025-06-30 → 2025
+    `tol` days of slack for 52/53-week filers (KR: 2025-02-01 → 2025).
+    """
+    end_this_year = pd.Timestamp(year=period_end.year, month=fye[0], day=fye[1])
+    if period_end <= end_this_year + pd.Timedelta(days=tol):
+        return period_end.year
+    return period_end.year + 1
+
+
+RELABEL_BASE = 10_000      # relabeled fiscal years live at 10000 + year (v0.1.29)
+
+
+def _relabel_fiscal_years(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """
+    Within each (metric, fy, fp, form) label, periods more than
+    OWN_PERIOD_TOLERANCE_DAYS apart are DIFFERENT periods sharing a wrong label.
+        - the period of the EARLIEST filing keeps the SEC label
+          (it is the one already in the database: nothing there changes)
+        - every other period gets fiscal_year = RELABEL_BASE + the year its
+          fiscal year ends (derived_fiscal_year); fiscal_period stays as filed
+    Example, CRM EPS, label (2025, FY, 10-K):
+        2025-01-31, filed 2025-03-05 → keeps fy=2025
+        2026-01-31, filed 2026-03-02 → fy=12026 (was lost before v0.1.29)
+
+    Why 10000+ and not simply 2026: the SEC labels are not consistent even
+    within one company (KR names its years by the start year until 2023, by
+    the end year in 2024–25, then by the start year again; REG labels a Q3 as
+    "Q2"), so ANY real-looking label can be taken — by another wrong label, or
+    by a FUTURE filing, which would then be blocked by ON CONFLICT. The SEC
+    never uses 10000+, so these rows can never collide with a filed label.
+    The analyzer does not read fiscal_year (it works on period_end), and
+    fiscal_period ("FY", "Q1", ...) is untouched.
+    If two relabeled periods still land on the same key (rare: a company that
+    changed its fiscal year end inside one year), the later one is dropped and
+    returned as `unresolved` so callers can report it.
+    """
+    fye = _fiscal_year_end(df)
+    if fye is None:
+        return df, pd.DataFrame()
+
+    keys = ["metric", "fiscal_year", "fiscal_period", "form_type"]
+    tol = pd.Timedelta(days=OWN_PERIOD_TOLERANCE_DAYS)
+
+    def clusters(g: pd.DataFrame) -> pd.Series:
+        """Re-reports of the same period (±tol) share a cluster number."""
+        cluster, start, c = {}, None, -1
+        for i, e in g["period_end"].sort_values().items():
+            if start is None or e - start > tol:
+                c, start = c + 1, e
+            cluster[i] = c
+        return pd.Series(cluster)
+
+    df = df.copy()
+    # only the few labels that hold different periods (one vectorized pass, not a loop over all)
+    span = df.groupby(keys)["period_end"].transform("max") - df.groupby(keys)["period_end"].transform("min")
+    for _, g in df[span > tol].groupby(keys, sort=False):
+        cl = clusters(g)
+        keep = cl[g["filed_date"].idxmin()]
+        for i in cl[cl != keep].index:
+            df.at[i, "fiscal_year"] = RELABEL_BASE + derived_fiscal_year(df.at[i, "period_end"], fye)
+            df.at[i, "_relabeled"] = True
+
+    # relabeled periods that STILL share a key with another relabeled period → reported
+    lost = []
+    moved = df[df["_relabeled"]]
+    span = moved.groupby(keys)["period_end"].transform("max") - moved.groupby(keys)["period_end"].transform("min")
+    for _, g in moved[span > tol].groupby(keys, sort=False):
+        cl = clusters(g)
+        keep = cl[g["filed_date"].idxmin()]
+        lost.append(g.loc[cl[cl != keep].index])
+    if not lost:
+        return df, pd.DataFrame()
+    unresolved = pd.concat(lost).drop_duplicates(["metric", "period_end", "form_type"])
+    return df, unresolved[keys + ["period_end", "filed_date"]].reset_index(drop=True)
 
 
 # ── upsert ─────────────────────────────────────────────────────────────────
