@@ -4,6 +4,7 @@ relabel_202611.py — one-off for v0.1.29 (18/11/2026). Run from the shared data
     python relabel_202611.py                 # DRY RUN, whole universe (~45–60 min): writes nothing
     python relabel_202611.py --sp500         # DRY RUN, today's S&P 500 only (~30 min)
     python relabel_202611.py CRM WDAY MTD    # DRY RUN, only these (seconds)
+    python relabel_202611.py XOM:34088       # a specific (old) CIK: XOM's filings before its 2026 CIK change
     python relabel_202611.py --write ...     # same, then inserts ONLY the recovered rows
     python relabel_202611.py --write --from-csv
                                              # only the companies the last dry run found
@@ -97,6 +98,8 @@ def main() -> None:
     global OUT
     write = "--write" in sys.argv
     args = [a.upper() for a in sys.argv[1:] if not a.startswith("--")]
+    forced = {a.split(":")[0]: int(a.split(":")[1]) for a in args if ":" in a}   # TICKER:CIK
+    args = [a.split(":")[0] for a in args]
     eng = get_engine()
     if "--from-csv" in sys.argv:
         prev = pd.read_csv(OUT)
@@ -118,7 +121,7 @@ def main() -> None:
 
     results, t0 = [], time.time()
     for i, t in enumerate(tickers, 1):
-        cik = get_cik_for_ticker(t)
+        cik = forced.get(t) or get_cik_for_ticker(t)
         if cik is None:
             continue
         try:

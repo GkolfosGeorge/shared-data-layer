@@ -44,9 +44,17 @@ from sqlalchemy import text
 from sqlalchemy.engine import Engine
 
 from ticker_provider import get_cik_for_ticker, get_sec_companies, SEC_HEADERS
+from xbrl_instance import InstanceError, instance_to_facts, merge_facts
 
 COMPANYFACTS_URL = "https://data.sec.gov/api/xbrl/companyfacts/CIK{cik:010d}.json"
 SUBMISSIONS_URL = "https://data.sec.gov/submissions/CIK{cik:010d}.json"
+ARCHIVE_INDEX_URL = "https://www.sec.gov/Archives/edgar/data/{cik}/{acc}/index.json"
+ARCHIVE_FILE_URL = "https://www.sec.gov/Archives/edgar/data/{cik}/{acc}/{name}"
+
+# v0.1.30: 10-Q/10-K filings missing from companyfacts are read from their own
+# XBRL instance in EDGAR (see xbrl_instance.py). Only filings this recent:
+XBRL_FALLBACK_DAYS = 3 * 366
+XBRL_FALLBACK_FORMS = ("10-K", "10-Q")
 
 # SEC's fair-access policy expects a well-behaved client; well under their
 # informal ~10 req/sec ceiling.
@@ -377,6 +385,87 @@ def fetch_companyfacts(cik: int) -> dict | None:
         return None
     r.raise_for_status()
     return r.json()
+
+
+def fetch_submissions(cik: int) -> dict | None:
+    """The small `submissions` JSON (list of recent filings), None on 404."""
+    url = SUBMISSIONS_URL.format(cik=cik)
+    r = requests.get(url, headers=SEC_HEADERS, timeout=30)
+    if r.status_code == 404:
+        return None
+    r.raise_for_status()
+    return r.json()
+
+
+def latest_filing_date(sub: dict | None) -> "date | None":
+    from datetime import datetime
+
+    dates = (sub or {}).get("filings", {}).get("recent", {}).get("filingDate", [])
+    if not dates:
+        return None
+    return max(datetime.strptime(d, "%Y-%m-%d").date() for d in dates)
+
+
+def accessions_in_facts(facts: dict) -> set:
+    return {o.get("accn") for tags in facts.get("facts", {}).values() for b in tags.values()
+            for obs in b.get("units", {}).values() for o in obs}
+
+
+def missing_filings(sub: dict | None, facts: dict, since: str) -> list[dict]:
+    """10-Q/10-K filed since `since` (YYYY-MM-DD) whose accession has NO fact in companyfacts."""
+    rec = (sub or {}).get("filings", {}).get("recent", {})
+    have = accessions_in_facts(facts)
+    out = []
+    for form, report, filed, accn in zip(rec.get("form", []), rec.get("reportDate", []),
+                                         rec.get("filingDate", []), rec.get("accessionNumber", [])):
+        if form in XBRL_FALLBACK_FORMS and report and filed >= since and accn not in have:
+            out.append({"form": form, "report": report, "filed": filed, "accn": accn})
+    return sorted(out, key=lambda f: f["filed"])
+
+
+def instance_name(index: dict) -> str | None:
+    """The XBRL instance in a filing folder: EDGAR's extract of inline XBRL (…_htm.xml)."""
+    names = [i.get("name", "") for i in index.get("directory", {}).get("item", [])]
+    hits = [n for n in names if n.endswith("_htm.xml")]
+    return hits[0] if hits else None
+
+
+def fetch_filing_facts(cik: int, filing: dict, sleep: float = REQUEST_SLEEP) -> dict:
+    """One filing's own XBRL → companyfacts-shaped dict. Raises on any problem."""
+    acc = filing["accn"].replace("-", "")
+    r = requests.get(ARCHIVE_INDEX_URL.format(cik=cik, acc=acc), headers=SEC_HEADERS, timeout=30)
+    r.raise_for_status()
+    time.sleep(sleep)
+    name = instance_name(r.json())
+    if name is None:
+        raise InstanceError("no …_htm.xml instance in the filing folder")
+    r = requests.get(ARCHIVE_FILE_URL.format(cik=cik, acc=acc, name=name), headers=SEC_HEADERS, timeout=60)
+    r.raise_for_status()
+    time.sleep(sleep)
+    return instance_to_facts(r.content, cik, filing["accn"], filing["form"], filing["filed"])
+
+
+def add_missing_filings(cik: int, facts: dict, sub: dict | None,
+                        today: "date | None" = None) -> tuple[dict, list[dict]]:
+    """
+    v0.1.30: companyfacts + every recent 10-Q/10-K it is missing, read from the
+    filing's own XBRL. Returns (merged facts, one report dict per missing filing:
+    form, report, filed, accn, n_facts, error). A filing that fails is skipped
+    (error set); the others still count. `facts` itself is never modified.
+    """
+    from datetime import timedelta
+
+    since = ((today or date.today()) - timedelta(days=XBRL_FALLBACK_DAYS)).isoformat()
+    report = []
+    for f in missing_filings(sub, facts, since):
+        try:
+            extra = fetch_filing_facts(cik, f)
+            n = sum(len(o) for t in extra["facts"].values() for b in t.values() for o in b["units"].values())
+            facts = merge_facts(facts, extra)
+            report.append({**f, "n_facts": n, "error": ""})
+        except Exception as e:
+            report.append({**f, "n_facts": 0, "error": f"{type(e).__name__}: {str(e)[:120]}"})
+    return facts, report
 
 
 def get_latest_filing_date(cik: int) -> "date | None":
@@ -802,13 +891,15 @@ def ingest_fundamentals_for_ticker(
         print(f"⚠️  {ticker}: no CIK found, skipping.")
         return {"ticker": ticker, "status": "no_cik"}
 
+    try:
+        sub = fetch_submissions(cik)        # small; used for the skip check AND the v0.1.30 fallback
+    except Exception:
+        sub = None
+
     if skip_if_no_new_filing:
         known = _get_latest_known_filed_date(ticker, engine)
         if known is not None:
-            try:
-                latest = get_latest_filing_date(cik)
-            except Exception:
-                latest = None  # δεν ξέρουμε -> προχωράμε στο πλήρες fetch, ποτέ σιωπηλό skip σε αβεβαιότητα
+            latest = latest_filing_date(sub)  # None = we don't know -> full fetch, never a silent skip
             if latest is not None and latest <= known:
                 print(f"⏭️  {ticker}: κανένα νέο filing (τελευταίο γνωστό {known}), παραλείπεται.")
                 return {"ticker": ticker, "status": "up_to_date", "attempted": 0, "inserted": 0}
@@ -818,10 +909,25 @@ def ingest_fundamentals_for_ticker(
         print(f"⚠️  {ticker}: no XBRL facts on file (CIK {cik}).")
         return {"ticker": ticker, "status": "no_facts"}
 
+    added = []
+    if sub is not None:
+        try:
+            facts, added = add_missing_filings(cik, facts, sub)
+        except Exception as e:      # never block the ingest itself
+            print(f"⚠️  {ticker}: XBRL εφεδρεία απέτυχε: {type(e).__name__}: {e}")
+        ok = [a for a in added if not a["error"]]
+        if ok:
+            print(f"📎 {ticker}: +{len(ok)} καταθέσεις από XBRL ("
+                  + ", ".join(f"{a['form']} {a['report']}" for a in ok) + ")")
+        for a in added:
+            if a["error"]:
+                print(f"⚠️  {ticker}: {a['form']} {a['report']} λείπει από το companyfacts, "
+                      f"και το XBRL της δεν διαβάστηκε: {a['error']}")
+
     df = parse_companyfacts(ticker, cik, facts)
     result = upsert_fundamentals(df, engine, caches=caches)
     print(f"✅ {ticker}: {result['inserted']}/{result['attempted']} rows inserted.")
-    return {"ticker": ticker, "status": "ok", **result}
+    return {"ticker": ticker, "status": "ok", "xbrl_filings": sum(not a["error"] for a in added), **result}
 
 
 def companies_changes(existing: dict[str, tuple], sec: dict[str, tuple]) -> list[dict]:
